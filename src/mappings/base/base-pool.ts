@@ -459,7 +459,7 @@ export function _handleTransferLP(erc20Event: TransferLPERC20Event | null, erc72
     log.info("handleTransferLP from {} to {}" , [transferLP.owner.toHexString(), transferLP.newOwner.toHexString()])
 
     // update Lends for old and new owners, creating entities where necessary
-    const oldOwnerAccount = Account.load(transferLP.owner)!
+    const oldOwnerAccount = loadOrCreateAccount(transferLP.owner)
     const newOwnerAccount = loadOrCreateAccount(transferLP.newOwner)
     for (var i=0; i<indexes.length; ++i) {
         const bucketIndex = indexes[i]

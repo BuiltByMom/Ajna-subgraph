@@ -1,5 +1,5 @@
 # this supports both ERC20 and ERC721 tokens, as union types aren't currently supported
-type Token @entity {
+type Token @entity(immutable: false) {
   # token address
   id: Bytes!
   # token symbol
@@ -25,7 +25,7 @@ type Token @entity {
   # Pool ENTITIES #
   # # # # # # # # #
 
-type PoolFactory @entity {
+type PoolFactory @entity(immutable: false) {
   # factory address
   id: Bytes!
   # indicates type of collateral (ERC20 or ERC721)
@@ -38,7 +38,7 @@ type PoolFactory @entity {
   txCount: BigInt!
 }
 
-type Pool @entity {
+type Pool @entity(immutable: false) {
   # pool address
   id: Bytes!
   # block pool was created at
@@ -130,7 +130,7 @@ type Pool @entity {
   tokenIdsAllowed: [BigInt!]!
 }
 
-type Bucket @entity {
+type Bucket @entity(immutable: false) {
   # bucket id: $poolAddress + '#' + $bucketIndex
   id: Bytes!
   # bucket index
@@ -156,7 +156,7 @@ type Bucket @entity {
 }
 
 # lend occurs per bucket in a pool
-type Lend @entity {
+type Lend @entity(immutable: false) {
   # Lend id: $bucketId + '|' + $accountId
   id: Bytes!
   # bucket to which a lend was made
@@ -178,7 +178,7 @@ type Lend @entity {
 }
 
 # each borrower has only one loan with a pool
-type Loan @entity {
+type Loan @entity(immutable: false) {
   # Loan id: $poolAddress + '|' + $borrowerId
   id: Bytes!
   # pool address
@@ -203,7 +203,7 @@ type Loan @entity {
   t0Np: BigDecimal!
 }
 
-type Account @entity {
+type Account @entity(immutable: false) {
   # address of the account
   id: Bytes!
   # list of pools in which an account is present
@@ -245,7 +245,7 @@ type Account @entity {
   txCount: BigInt!
 }
 
-type LiquidationAuction @entity {
+type LiquidationAuction @entity(immutable: false) {
   id: Bytes!                       # $poolAddress + '|' + $loanId + '|' + blockNumber
   pool: Pool!                      # pool in which the liquidation occurred
   borrower: Bytes!                 # address of the borrower being liquidated
@@ -273,7 +273,7 @@ type LiquidationAuction @entity {
 
 # tracks the reserve auction process across multiple takes in a single auction
 # used as start and take events are emitted as ReserveAuction
-type ReserveAuction @entity {
+type ReserveAuction @entity(immutable: false) {
   id: Bytes!                    # $poolAddress + '|' + $burnEpoch
   pool: Pool!                   # Pool in which the reserve auction occurred
   claimableReservesRemaining: BigDecimal! # uint256 claimable reserves remaining at start or at latest take
@@ -285,7 +285,7 @@ type ReserveAuction @entity {
 }
 
 # LP transferors approved by a lender for a pool, updated upon Approve/RevokeLpTransferors
-type LPTransferorList @entity {
+type LPTransferorList @entity(immutable: false) {
   id: Bytes! # $poolAddress + '|' + $lender
   pool: Pool! # pool in which these transferors have been approved
   lender: Bytes! # address of the lender who has approved transferors
@@ -293,14 +293,14 @@ type LPTransferorList @entity {
 }
 
 # represents a LP allowance for a single bucket
-type LPAllowance @entity {
+type LPAllowance @entity(immutable: false) {
   id: Bytes!          # LPAllowanceList.id + '|' + $index
   index: Int!         # bucket index where an allowance has been granted
   amount: BigDecimal! # size of the allowance (measured in LP)
 }
 
 # updated upon Increase/Decrease/RevokeLPAllowance
-type LPAllowanceList @entity {
+type LPAllowanceList @entity(immutable: false) {
   id: Bytes! # $poolAddress + '|' + $lender + '|' + $spender
   pool: Pool! # pool in which LP allowances have been granted
   lender: Bytes! # address of the lender who has granted an allowance
@@ -422,7 +422,7 @@ type Flashloan @entity(immutable: true) {
   amount: BigDecimal! # uint256
 }
 
-type Kick @entity {
+type Kick @entity(immutable: false) {
   id: Bytes!
   kicker: Bytes!             # address of the kicker
   pool: Pool!                # Pool in which a kick occurred
@@ -713,7 +713,7 @@ type MergeOrRemoveCollateralNFT @entity(immutable: true) {
   # POSITION MANAGER ENTITIES #
   # # # # # # # # # # # # # # #
 
-type Position @entity {
+type Position @entity(immutable: false) {
   id: Bytes!                # byte encoded tokenId
   tokenId: BigInt           # tokenId
   indexes: [PositionLend!]! # list of PositionLends which constitute a position
@@ -724,7 +724,7 @@ type Position @entity {
 }
 
 # created to handle the seperate lpb positions for each bucket index
-type PositionLend @entity {
+type PositionLend @entity(immutable: false) {
   id: Bytes! # $positionId + '|' + $bucketIndex
   bucket: Bucket! # pointer to associated Bucket entity
   bucketIndex: Int! # index of the bucket with lpb
@@ -783,14 +783,14 @@ type RedeemPosition @entity(immutable: true) {
   # GRANT FUND ENTITIES #
   # # # # # # # # # # # #
 
-type GrantFund @entity {
+type GrantFund @entity(immutable: false) {
   id: Bytes! # address of the grant fund
   treasury: BigDecimal! # Total ajna tokens in the grant fund treasure
   distributionPeriods: [DistributionPeriod!]! # List of distribution periods
   totalDelegationRewardsClaimed: BigDecimal! # Total delegation rewards claimed across all distribution periods
 }
 
-type DistributionPeriod @entity {
+type DistributionPeriod @entity(immutable: false) {
   id: Bytes! # distribution period id converted to Bytes from uint
   distributionId: BigInt! # identifies the distribution period
   startBlock: BigInt! # block number the distribution period starts
@@ -806,7 +806,7 @@ type DistributionPeriod @entity {
   totalTokensDistributed: BigDecimal! # Total ajna tokens distributed to executed proposals in a distribution period
 }
 
-type Proposal @entity {
+type Proposal @entity(immutable: false) {
   id: Bytes! # proposal id converted to Bytes from uint
   proposalId: BigInt! # proposal id stored in original uint format
   description: String! # proposal description hashed as part of proposalId
@@ -820,7 +820,7 @@ type Proposal @entity {
   params: [ProposalParams!]! # ProposalParams
 }
 
-type ProposalParams @entity {
+type ProposalParams @entity(immutable: false) {
   id: Bytes! # $proposalId + '|' + $paramIndex
   target: Bytes! # address
   value: BigInt! # uint256
@@ -829,7 +829,7 @@ type ProposalParams @entity {
   tokensRequested: BigDecimal! # uint256
 }
 
-type DistributionPeriodVote @entity {
+type DistributionPeriodVote @entity(immutable: false) {
   id: Bytes! # $accountId + '|'' + $distributionId
   voter: Account! # the account of the voter whose vote state in this distribution is being tracked
   distribution: DistributionPeriod! # the distribution period associated with this entity
@@ -842,7 +842,7 @@ type DistributionPeriodVote @entity {
 }
 
 # 1-1 with Proposal. Multiple screeningVotes on the same proposal write to a single entity
-type ScreeningVote @entity {
+type ScreeningVote @entity(immutable: false) {
   id: Bytes! # $proposalId + 'screening' + $account.id + $distributionId
   distribution: DistributionPeriod! # distribution period the vote was cast in
   voter: Account! # actor who cast votes
@@ -852,7 +852,7 @@ type ScreeningVote @entity {
 }
 
 # 1-1 with Proposal. Multiple fundingVotes on the same proposal write to a single entity
-type FundingVote @entity {
+type FundingVote @entity(immutable: false) {
   id: Bytes! # $proposalId + 'funding' + $account.id + $distributionId
   distribution: DistributionPeriod! # distribution period the vote was cast in
   voter: Account! # actor who cast votes
@@ -862,7 +862,7 @@ type FundingVote @entity {
   votesCast: [VoteCast!]! # array of voteCast entities created for each fundingVote on this proposal
 }
 
-type FundedSlate @entity {
+type FundedSlate @entity(immutable: false) {
   id: Bytes! # bytes32 hash of slate proposalIds
   distribution: DistributionPeriod! # distribution period the vote was cast in
   proposals: [Proposal!]! # uint256[] list of proposalIds

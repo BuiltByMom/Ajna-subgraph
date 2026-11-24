@@ -1,0 +1,31 @@
+{
+  "network": "sepolia",
+  "deployments": [
+    {
+      "description": "placeholder addresses: first factory, with its own PositionManager and readers",
+      "factory": {
+        "address": "0x00000000000000000000000000000000000000f1",
+        "startBlock": 100
+      },
+      "positionManager": {
+        "address": "0x00000000000000000000000000000000000000a1",
+        "startBlock": 101
+      },
+      "poolInfoUtils": "0x00000000000000000000000000000000000000b1",
+      "poolInfoUtilsMulticall": "0x00000000000000000000000000000000000000c1"
+    },
+    {
+      "description": "placeholder addresses: second factory, with its own PositionManager and readers",
+      "factory": {
+        "address": "0x00000000000000000000000000000000000000f2",
+        "startBlock": 200
+      },
+      "positionManager": {
+        "address": "0x00000000000000000000000000000000000000a2",
+        "startBlock": 201
+      },
+      "poolInfoUtils": "0x00000000000000000000000000000000000000b2",
+      "poolInfoUtilsMulticall": "0x00000000000000000000000000000000000000c2"
+    }
+  ]
+}

@@ -1,0 +1,24 @@
+{
+  "name": "ajna-v3-subgraph",
+  "license": "UNLICENSED",
+  "private": true,
+  "scripts": {
+    "configure": "node scripts/configure.js",
+    "codegen": "graph codegen",
+    "build": "graph build",
+    "test": "graph test -v 0.6.0",
+    "abis:check": "./scripts/copy-abis.sh --check"
+  },
+  "dependencies": {
+    "@graphprotocol/graph-cli": "0.56",
+    "@graphprotocol/graph-ts": "0.35.1"
+  },
+  "devDependencies": {
+    "matchstick-as": "0.6.0",
+    "mustache": "^4.2.0",
+    "yaml": "^2.3.4"
+  },
+  "resolutions": {
+    "elliptic": "6.6.1"
+  }
+}

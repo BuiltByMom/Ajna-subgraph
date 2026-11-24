@@ -29,3 +29,43 @@ jobs:
         run: yarn test
 
     timeout-minutes: 10
+
+  v3:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: v3
+    steps:
+      - uses: actions/checkout@v4
+
+      # graph-cli's dependencies no longer install on Node 16
+      - name: Use Node.js 24.x
+        uses: actions/setup-node@v4
+        with:
+          node-version: 24.x
+
+      - name: Install Dependencies
+        run: |
+          npm install -g yarn
+          yarn --frozen-lockfile
+
+      - name: Check ABIs against their recorded commit
+        run: yarn abis:check
+
+      - name: Build Subgraph for each network
+        run: |
+          for config in config/*.json; do
+            yarn configure "$config"
+            yarn codegen
+            yarn build
+          done
+
+      # a manifest with several factories must keep building, and the tests cover every deployment
+      - name: Build and Test with two factories
+        run: |
+          yarn configure tests/fixtures/two-factories.json
+          yarn codegen
+          yarn build
+          yarn test
+
+    timeout-minutes: 10

@@ -1,0 +1,18 @@
+{
+  "network": "sepolia",
+  "deployments": [
+    {
+      "description": "30-day loan term",
+      "factory": {
+        "address": "0x7cc928b862c9f0c7c5b1b1edcfd4e4e71f4d2b4c",
+        "startBlock": 12197818
+      },
+      "positionManager": {
+        "address": "0x632ca9049c082f56639a07a1db79a750f98c24df",
+        "startBlock": 12197821
+      },
+      "poolInfoUtils": "0xcda8ae827582f174b5d938c258a09db7a71c92ef",
+      "poolInfoUtilsMulticall": "0x2ace86b638676f7f6b17db4646c7ed00e42b7df9"
+    }
+  ]
+}

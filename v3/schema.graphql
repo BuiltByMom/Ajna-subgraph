@@ -1,0 +1,15 @@
+# Ajna v3 subgraph schema.
+#
+# Only what the handlers written so far populate. Entities are added together with the handlers
+# that write them.
+
+type PoolCreated @entity(immutable: true) {
+  id: Bytes!              # transaction hash + log index
+  pool: Bytes!            # address of the pool that was created
+  factory: Bytes!         # factory that created it; each factory deploys pools of one loan term
+  collateralToken: Bytes! # address of the pool's collateral token
+  quoteToken: Bytes!      # address of the pool's quote token
+  blockNumber: BigInt!
+  blockTimestamp: BigInt!
+  transactionHash: Bytes!
+}

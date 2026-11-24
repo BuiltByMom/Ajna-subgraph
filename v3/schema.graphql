@@ -1,7 +1,7 @@
 # Ajna v3 subgraph schema.
 #
-# Entities are added together with the handlers that write them. Surplus auctions and the
-# PositionManager are not covered yet.
+# Entities are added together with the handlers that write them. The PositionManager is not
+# covered yet.
 #
 # Amounts, prices and rates are BigDecimal in whole units (the contracts' WAD values divided by
 # 1e18). Bucket indexes are Int. Counts, block numbers and timestamps are BigInt.
@@ -84,6 +84,14 @@ type Pool @entity {
   collateralSurplus: BigDecimal!             # free collateral not yet in an auction lot
   collateralSurplusClaimable: BigDecimal!    # collateral a surplus auction kick would add to the lot now
   collateralSurplusLotRemaining: BigDecimal! # collateral left in the current or last auction lot
+
+  # SURPLUS AUCTIONS
+  # Anyone can start an auction of the pool's surplus quote, or of its surplus collateral, for
+  # AJNA, which is burned. The two run independently, each at most once every five days.
+  quoteSurplusAuction: SurplusAuction        # the latest auction of surplus quote, if there has been one
+  collateralSurplusAuction: SurplusAuction   # the latest auction of surplus collateral, if there has been one
+  totalAjnaBurned: BigDecimal!               # AJNA burned by takes in all of the pool's surplus auctions
+  surplusAuctions: [SurplusAuction!]! @derivedFrom(field: "pool")
 
   # FLASHLOANS
   quoteTokenFlashloaned: BigDecimal!         # total quote token lent in flashloans
@@ -232,8 +240,34 @@ type Account @entity {
   lends: [Lend!]! @derivedFrom(field: "account")
   loans: [Loan!]! @derivedFrom(field: "account")
   exitQueuePlaces: [ExitQueuePlace!]! @derivedFrom(field: "account")
-  # the account's lender actions, and actions on its loans whoever performed them
+  # the account's actions as a lender, kicker or taker, and actions on its loans whoever performed them
   txCount: BigInt!
+}
+
+enum SurplusAuctionKind {
+  Quote       # sells surplus quote token
+  Collateral  # sells surplus collateral token
+}
+
+# One auction of a pool's surplus. The kick fixes the lot: the surplus claimable at that moment
+# plus whatever the previous auction of the same kind left unsold. The whole lot starts at a
+# price of 1,000,000,000 AJNA and the price halves every hour. Takes are accepted for 72 hours
+# after the kick, and every take belongs to the latest kick of its kind.
+type SurplusAuction @entity {
+  id: Bytes!                    # $poolAddress + '|' + $kind + '|' + $kickTime
+  pool: Pool!
+  kind: SurplusAuctionKind!
+  token: Token!                 # token being sold: the pool's quote or collateral token
+  kick: SurplusAuctionKick!
+  kicker: Bytes!                # address that started the auction
+  kickTime: BigInt!             # timestamp of the kick
+  lot: BigDecimal!              # amount offered
+  rolledOver: BigDecimal!       # part of the lot that the previous auction left unsold
+  startingPrice: BigDecimal!    # AJNA per token at the kick
+  lotRemaining: BigDecimal!     # part of the lot not sold so far; it joins the next auction's lot
+  lastTakePrice: BigDecimal     # AJNA per token paid by the latest take; unset until the first take
+  ajnaBurned: BigDecimal!       # AJNA burned by this auction's takes
+  takes: [SurplusAuctionTake!]! @derivedFrom(field: "auction")
 }
 
 # An address a borrower has approved to borrow, pull collateral and move loans on their behalf
@@ -502,6 +536,37 @@ type SetBorrowerDelegates @entity(immutable: true) {
   borrower: Bytes!
   delegates: [Bytes!]!
   approved: Boolean!              # true if the delegates were approved, false if they were revoked
+  blockNumber: BigInt!
+  blockTimestamp: BigInt!
+  transactionHash: Bytes!
+}
+
+# KickQuoteSurplusAuction or KickCollateralSurplusAuction: a surplus auction was started.
+type SurplusAuctionKick @entity(immutable: true) {
+  id: Bytes!
+  pool: Pool!
+  auction: SurplusAuction!
+  kind: SurplusAuctionKind!
+  kicker: Bytes!
+  lot: BigDecimal!              # amount offered
+  rolledOver: BigDecimal!       # part of the lot that the previous auction left unsold
+  auctionPrice: BigDecimal!     # starting price, in AJNA per token
+  blockNumber: BigInt!
+  blockTimestamp: BigInt!
+  transactionHash: Bytes!
+}
+
+# TakeQuoteSurplus or TakeCollateralSurplus: part of a surplus auction's lot was bought with AJNA.
+type SurplusAuctionTake @entity(immutable: true) {
+  id: Bytes!
+  pool: Pool!
+  auction: SurplusAuction!
+  kind: SurplusAuctionKind!
+  taker: Bytes!
+  amount: BigDecimal!           # quote or collateral bought
+  ajnaBurned: BigDecimal!       # AJNA the taker paid, which was burned
+  lotRemaining: BigDecimal!     # part of the lot left after this take
+  auctionPrice: BigDecimal!     # price paid, in AJNA per token
   blockNumber: BigInt!
   blockTimestamp: BigInt!
   transactionHash: Bytes!

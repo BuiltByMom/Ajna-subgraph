@@ -70,6 +70,7 @@ import { createLoan, getLoanEntityId, loadLoan, refreshLoan } from "../utils/poo
 import { clearAllowances, decreaseAllowances, increaseAllowances } from "../utils/pool/lp-allowances"
 import { approveTransferors, revokeTransferors } from "../utils/pool/lp-transferors"
 import { countPoolAction, lendRate, loadPool, updatePool } from "../utils/pool/pool"
+import { SURPLUS_COLLATERAL, SURPLUS_QUOTE, kickSurplusAuction, takeSurplus } from "../utils/pool/surplus-auction"
 
 // Pool, Bucket, Lend and Loan are set from contract reads rather than from event amounts. A read
 // made while handling an event returns state as of the end of that event's block, so these
@@ -578,15 +579,79 @@ export function handleSetBorrowerDelegates(event: SetBorrowerDelegatesEvent): vo
 /*** Surplus Auction Event Handlers ***/
 /**************************************/
 
-// Not implemented yet: surplus auctions.
+// The pool sells its surplus quote and its surplus collateral in two separate auctions, for AJNA
+// that is burned. Neither a kick nor a take accrues interest, so the pool's readers project it
+// from the last update; the pool is refreshed for its balances and surplus all the same.
 
-export function handleKickQuoteSurplusAuction(event: KickQuoteSurplusAuctionEvent): void {}
+// Counts a kick or a take against the pool and whoever performed it, and refreshes the pool.
+// The caller saves the pool.
+function beginAuctionAction(event: ethereum.Event, pool: Pool, actor: Address): void {
+  countPoolAction(pool)
+  updatePool(pool, event.block)
+  incrementAccountTxCount(actor)
+}
 
-export function handleTakeQuoteSurplus(event: TakeQuoteSurplusEvent): void {}
+export function handleKickQuoteSurplusAuction(event: KickQuoteSurplusAuctionEvent): void {
+  const pool = loadPool(event.address)
+  beginAuctionAction(event, pool, event.params.kicker)
+  kickSurplusAuction(
+    event,
+    pool,
+    SURPLUS_QUOTE,
+    event.params.kicker,
+    event.params.lot,
+    event.params.rolledOver,
+    event.params.auctionPrice
+  )
+  pool.save()
+}
 
-export function handleKickCollateralSurplusAuction(event: KickCollateralSurplusAuctionEvent): void {}
+export function handleTakeQuoteSurplus(event: TakeQuoteSurplusEvent): void {
+  const pool = loadPool(event.address)
+  beginAuctionAction(event, pool, event.params.taker)
+  takeSurplus(
+    event,
+    pool,
+    SURPLUS_QUOTE,
+    event.params.taker,
+    event.params.amount,
+    event.params.ajnaBurned,
+    event.params.lotRemaining,
+    event.params.auctionPrice
+  )
+  pool.save()
+}
 
-export function handleTakeCollateralSurplus(event: TakeCollateralSurplusEvent): void {}
+export function handleKickCollateralSurplusAuction(event: KickCollateralSurplusAuctionEvent): void {
+  const pool = loadPool(event.address)
+  beginAuctionAction(event, pool, event.params.kicker)
+  kickSurplusAuction(
+    event,
+    pool,
+    SURPLUS_COLLATERAL,
+    event.params.kicker,
+    event.params.lot,
+    event.params.rolledOver,
+    event.params.auctionPrice
+  )
+  pool.save()
+}
+
+export function handleTakeCollateralSurplus(event: TakeCollateralSurplusEvent): void {
+  const pool = loadPool(event.address)
+  beginAuctionAction(event, pool, event.params.taker)
+  takeSurplus(
+    event,
+    pool,
+    SURPLUS_COLLATERAL,
+    event.params.taker,
+    event.params.amount,
+    event.params.ajnaBurned,
+    event.params.lotRemaining,
+    event.params.auctionPrice
+  )
+  pool.save()
+}
 
 /***************************/
 /*** Pool Event Handlers ***/

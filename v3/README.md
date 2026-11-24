@@ -11,9 +11,10 @@ In progress. The subgraph indexes:
 - LP transfers, allowances and approved transferors
 - loans (`DrawDebt`, `RepayDebt`, `MoveLoan`, `ImproveLoan`, `LoanClosed`, `LoanCalled`) and borrower delegates
 - the lender exit queue (`MarkQuoteForWithdrawal`, `ExitQueueFunded`, and claims from escrow)
+- surplus auctions of quote and of collateral (`KickQuoteSurplusAuction`, `TakeQuoteSurplus`, `KickCollateralSurplusAuction`, `TakeCollateralSurplus`)
 - flashloans, interest rate changes and interest update failures
 
-The handlers for surplus auctions and the PositionManager are still empty. Until they are written, a pool is not refreshed when a surplus auction event changes it.
+Every pool event is handled. The handlers for the PositionManager are still empty.
 
 ## Setup
 
@@ -70,7 +71,8 @@ The entity that records an event (`AddQuoteToken`, `DrawDebt` and so on) keeps t
 
 Some values are added up from events instead, because the contract changes them by exactly an event's amount and nowhere else:
 
-- on the pool: `txCount`, the flashloan totals, `interestUpdateFailures`, `pledgedCollateral` and `lenderCollateral`. `loansCount` follows the loans' status.
+- on the pool: `txCount`, the flashloan totals, `interestUpdateFailures`, `pledgedCollateral`, `lenderCollateral` and `totalAjnaBurned`. `loansCount` follows the loans' status.
+- surplus auctions: every `SurplusAuction`.
 - the exit queue: a bucket's `queueHead`, `queueTail`, `escrowQuote` and `escrowCollateral`, and every `ExitQueuePlace`. These are right after each event, not only at the end of the block.
 - LP allowances.
 
@@ -105,19 +107,32 @@ A lender who calls `markQuoteForWithdrawal` puts all of their LP in a bucket on 
 
 Deposit maturity is not indexed. `PoolInfoUtils.bucketLendable` gives how much of a bucket's deposit can fund loans now.
 
+### Surplus auctions
+
+A pool sells its surplus quote and its surplus collateral in two separate auctions, each for AJNA that is burned. A `SurplusAuction` has a `kind` of `Quote` or `Collateral`, and the two kinds run independently.
+
+- **Kick.** Anyone can kick an auction of a kind once five days have passed since that kind's last kick. The kick fixes the `lot`: the surplus claimable at that moment plus `rolledOver`, what the previous auction of the kind left unsold.
+- **Price.** The whole lot starts at 1,000,000,000 AJNA, so `startingPrice` is that divided by the lot, and the price halves every hour.
+- **Takes.** Takes are accepted for 72 hours after the kick. Each one lowers `lotRemaining` and adds to `ajnaBurned`. Whether an auction is still open depends on the time, so it is not stored: compare `kickTime` with the block timestamp.
+- **Identity.** An auction's id is the pool address, its kind and its kick time. `Pool.quoteSurplusAuction` and `Pool.collateralSurplusAuction` point at the latest of each kind, and every take belongs to the latest kick of its kind.
+
+`Pool.quoteSurplus`, `quoteSurplusClaimable` and `quoteSurplusLotRemaining`, and the three collateral fields, are the pool's own reading of its surplus when it was last refreshed.
+
+The kick and take events of the two kinds have the same shape and are stored as `SurplusAuctionKick` and `SurplusAuctionTake`, with a `kind`.
+
 ### Retention
 
-A `Lend` is removed when the lender has no LP left in the bucket, and an `ExitQueuePlace` when its last LP is claimed. A `BorrowerDelegate`, `LPAllowance` or `LPTransferorList` is removed when it is revoked or used up. Pools, buckets and loans are kept: a closed loan stays, with the bucket and expiry it had.
+A `Lend` is removed when the lender has no LP left in the bucket, and an `ExitQueuePlace` when its last LP is claimed. A `BorrowerDelegate`, `LPAllowance` or `LPTransferorList` is removed when it is revoked or used up. Pools, buckets, loans and surplus auctions are kept: a closed loan stays, with the bucket and expiry it had.
 
 ### Differences from the v2 schema
 
-This covers the entities written so far. Fields and entities that belong to the handlers not yet written, such as a pool's `totalAjnaBurned` and a bucket's `positionLends`, are absent for now and are not listed as removed.
+This covers the entities written so far. Fields and entities that belong to the PositionManager handlers, which are not written yet, such as a bucket's `positionLends`, are absent for now and are not listed as removed.
 
 | Entity | Change |
 | ------ | ------ |
 | `PoolFactory` | Adds `loanTerm`. `pools` is derived. `poolType` and `txCount` are gone. |
-| `Pool` | Adds `factory`, `loanTerm`, `debt`, `rateAtTarget`, `utilization`, `escrowedQuote`, `availableQuote`, `lenderCollateral`, the six surplus fields, `interestUpdateFailures` and `updatedAt*`. `t0debt` now holds t0 debt (v2 stored the debt there). `loansCount` counts loans with debt. Prices (`hpb`, `htp`, `lup`), fees, reserves, burn epoch, bonds, liquidations, `totalInterestEarned`, `maxBorrower`, `minDebtAmount`, `actualUtilization`, `targetUtilization`, `poolType` and the ERC721 fields are gone. |
-| `Pool.txCount`, `Token.txCount`, `Account.txCount` | Count actions. `UpdateInterestRate`, `InterestUpdateFailure`, `LoanClosed`, `ImproveLoan` and `ExitQueueFunded` are emitted as part of another action and are not counted. An account's count covers its lender actions and every action on its loans, including a call or a move by someone else. |
+| `Pool` | Adds `factory`, `loanTerm`, `debt`, `rateAtTarget`, `utilization`, `escrowedQuote`, `availableQuote`, `lenderCollateral`, the six surplus fields, `interestUpdateFailures` and `updatedAt*`. `t0debt` now holds t0 debt (v2 stored the debt there). `loansCount` counts loans with debt. `reserveAuctions` is replaced by `surplusAuctions`, `quoteSurplusAuction` and `collateralSurplusAuction`. Prices (`hpb`, `htp`, `lup`), fees, reserves, burn epoch, bonds, liquidations, `totalInterestEarned`, `maxBorrower`, `minDebtAmount`, `actualUtilization`, `targetUtilization`, `poolType` and the ERC721 fields are gone. |
+| `Pool.txCount`, `Token.txCount`, `Account.txCount` | Count actions. `UpdateInterestRate`, `InterestUpdateFailure`, `LoanClosed`, `ImproveLoan` and `ExitQueueFunded` are emitted as part of another action and are not counted. An account's count covers its actions as a lender, kicker or taker, and every action on its loans, including a call or a move by someone else. |
 | `Token` | `pools` is split into the derived `poolsAsCollateral` and `poolsAsQuote`. `tokenType` and `totalSupply` are gone. |
 | `Bucket` | `lends` is derived. Adds `t0debt`, `loans`, `queueHead`, `queueTail`, `escrowQuote`, `escrowCollateral`, `exitQueuePlaces` and `updatedAt*`. `deposit`, `collateral` and `lpb` exclude what the exit queue has moved to escrow. |
 | `Lend` | Adds `account`, `marked`, `liveLpb`, `fundedValueInQuote` and `updatedAt*`. `lpbValueInQuote` includes LP the exit queue has funded. |
@@ -138,6 +153,8 @@ This covers the entities written so far. Fields and entities that belong to the 
 | `Flashloan` | Adds `token` and the block and transaction fields. |
 | `UpdateInterestRate` | Keeps the old and new borrow rate only. |
 | `InterestUpdateFailure` | New. |
+| `SurplusAuction` | Replaces `ReserveAuction`. One per kick, of either kind, identified by its kick time instead of a burn epoch. Has `kind`, `token`, `kicker`, `kickTime`, `lot`, `rolledOver`, `startingPrice`, `lotRemaining`, `lastTakePrice` and `ajnaBurned`; `takes` is derived. |
+| `SurplusAuctionKick`, `SurplusAuctionTake` | Replace `ReserveAuctionKick` and `ReserveAuctionTake`. Their ids are the transaction hash and log index, so several in one transaction no longer collide. The kicker and taker come from the event, not from the transaction's sender. |
 
 ## ABIs
 

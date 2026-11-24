@@ -41,6 +41,7 @@ export function createPool(poolAddress: Address): Pool {
   pool.collateralSurplusClaimable = ZERO_BD
   pool.collateralSurplusLotRemaining = ZERO_BD
 
+  pool.totalAjnaBurned = ZERO_BD
   pool.quoteTokenFlashloaned = ZERO_BD
   pool.collateralFlashloaned = ZERO_BD
   pool.interestUpdateFailures = ZERO_BI

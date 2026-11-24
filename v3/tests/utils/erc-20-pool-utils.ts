@@ -12,6 +12,8 @@ import {
   ImproveLoan,
   IncreaseLPAllowance,
   InterestUpdateFailure,
+  KickCollateralSurplusAuction,
+  KickQuoteSurplusAuction,
   LoanCalled,
   LoanClosed,
   MarkQuoteForWithdrawal,
@@ -23,6 +25,8 @@ import {
   RevokeLPAllowance,
   RevokeLPTransferors,
   SetBorrowerDelegates,
+  TakeCollateralSurplus,
+  TakeQuoteSurplus,
   TransferLP,
   UpdateInterestRate
 } from "../../generated/templates/ERC20Pool/ERC20Pool"
@@ -487,5 +491,94 @@ export function createExitQueueFundedEvent(
     uintParam("collateral", collateral),
     uintParam("queueHead", queueHead)
   ]
+  return event
+}
+
+// The quote and collateral auctions emit events of the same shape.
+
+function kickParams(kicker: Address, lot: BigInt, rolledOver: BigInt, auctionPrice: BigInt): ethereum.EventParam[] {
+  return [
+    addressParam("kicker", kicker),
+    uintParam("lot", lot),
+    uintParam("rolledOver", rolledOver),
+    uintParam("auctionPrice", auctionPrice)
+  ]
+}
+
+function takeParams(
+  taker: Address,
+  amount: BigInt,
+  ajnaBurned: BigInt,
+  lotRemaining: BigInt,
+  auctionPrice: BigInt
+): ethereum.EventParam[] {
+  return [
+    addressParam("taker", taker),
+    uintParam("amount", amount),
+    uintParam("ajnaBurned", ajnaBurned),
+    uintParam("lotRemaining", lotRemaining),
+    uintParam("auctionPrice", auctionPrice)
+  ]
+}
+
+export function createKickQuoteSurplusAuctionEvent(
+  pool: Address,
+  blockNumber: i32,
+  logIndex: i32,
+  kicker: Address,
+  lot: BigInt,
+  rolledOver: BigInt,
+  auctionPrice: BigInt
+): KickQuoteSurplusAuction {
+  const event = changetype<KickQuoteSurplusAuction>(newMockEvent())
+  placeEvent(event, pool, blockNumber, logIndex)
+  event.parameters = kickParams(kicker, lot, rolledOver, auctionPrice)
+  return event
+}
+
+export function createKickCollateralSurplusAuctionEvent(
+  pool: Address,
+  blockNumber: i32,
+  logIndex: i32,
+  kicker: Address,
+  lot: BigInt,
+  rolledOver: BigInt,
+  auctionPrice: BigInt
+): KickCollateralSurplusAuction {
+  const event = changetype<KickCollateralSurplusAuction>(newMockEvent())
+  placeEvent(event, pool, blockNumber, logIndex)
+  event.parameters = kickParams(kicker, lot, rolledOver, auctionPrice)
+  return event
+}
+
+export function createTakeQuoteSurplusEvent(
+  pool: Address,
+  blockNumber: i32,
+  logIndex: i32,
+  taker: Address,
+  amount: BigInt,
+  ajnaBurned: BigInt,
+  lotRemaining: BigInt,
+  auctionPrice: BigInt
+): TakeQuoteSurplus {
+  const event = changetype<TakeQuoteSurplus>(newMockEvent())
+  placeEvent(event, pool, blockNumber, logIndex)
+  event.parameters = takeParams(taker, amount, ajnaBurned, lotRemaining, auctionPrice)
+  return event
+}
+
+export function createTakeCollateralSurplusEvent(
+  pool: Address,
+  blockNumber: i32,
+  logIndex: i32,
+  taker: Address,
+  amount: BigInt,
+  ajnaBurned: BigInt,
+  lotRemaining: BigInt,
+  auctionPrice: BigInt
+): TakeCollateralSurplus {
+  const event = changetype<TakeCollateralSurplus>(newMockEvent())
+  placeEvent(event, pool, blockNumber, logIndex)
+  event.parameters = takeParams(taker, amount, ajnaBurned, lotRemaining, auctionPrice)
   return event
 }

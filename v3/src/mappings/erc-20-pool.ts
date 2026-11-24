@@ -5,12 +5,14 @@ import {
   AddQuoteToken,
   Bucket,
   DrawDebt,
+  ExitQueueFunded,
   Flashloan,
   ImproveLoan,
   InterestUpdateFailure,
   Loan,
   LoanCalled,
   LoanClosed,
+  MarkQuoteForWithdrawal,
   MoveLoan,
   MoveQuoteToken,
   Pool,
@@ -57,6 +59,12 @@ import { ONE_BI } from "../utils/constants"
 import { bigIntArrayToIntArray, eventId, tokenAmountToDecimal, wadToDecimal } from "../utils/convert"
 import { setBorrowerDelegates } from "../utils/pool/borrower-delegates"
 import { updateBucket } from "../utils/pool/bucket"
+import {
+  claimCollateralFromExitQueue,
+  claimQuoteFromExitQueue,
+  fundExitQueue,
+  openExitQueuePlace
+} from "../utils/pool/exit-queue"
 import { updateLend } from "../utils/pool/lend"
 import { createLoan, getLoanEntityId, loadLoan, refreshLoan } from "../utils/pool/loan"
 import { clearAllowances, decreaseAllowances, increaseAllowances } from "../utils/pool/lp-allowances"
@@ -68,8 +76,8 @@ import { countPoolAction, loadPool, updatePool } from "../utils/pool/pool"
 // entities always hold end-of-block state, and events that share a block all write the same
 // values. The entity that records each event keeps that event's own amounts.
 //
-// The exceptions are the pool's counters and totals that the contract changes by exactly an
-// event's amount: those are added up from the events.
+// The exceptions are values the contract changes by exactly an event's amount, which are added
+// up from the events: the pool's counters and collateral totals, and the exit queue.
 
 /*****************************/
 /*** Lender Event Handlers ***/
@@ -152,14 +160,22 @@ export function handleMoveQuoteToken(event: MoveQuoteTokenEvent): void {
   moveQuoteToken.save()
 }
 
-// For a marked lender this is a claim of collateral from the bucket's exit escrow, and the
-// amount can be zero.
+// For a marked lender this is a claim of collateral from the bucket's exit escrow. The LP it
+// redeems left the bucket when the queue funded it, and the amount is zero when the claim only
+// clears funded LP too small to pay out.
 export function handleRemoveCollateral(event: RemoveCollateralEvent): void {
   const pool = loadPool(event.address)
   const index = event.params.index.toI32()
   pool.lenderCollateral = pool.lenderCollateral.minus(wadToDecimal(event.params.amount))
   recordLenderAction(event, pool, event.params.claimer)
   const bucket = refreshLend(event, pool, index, event.params.claimer)
+  const isExitClaim = claimCollateralFromExitQueue(
+    bucket,
+    event.params.claimer,
+    event.params.amount,
+    event.params.lpRedeemed
+  )
+  if (isExitClaim) bucket.save()
 
   const removeCollateral = new RemoveCollateral(eventId(event))
   removeCollateral.pool = pool.id
@@ -168,6 +184,7 @@ export function handleRemoveCollateral(event: RemoveCollateralEvent): void {
   removeCollateral.index = index
   removeCollateral.amount = wadToDecimal(event.params.amount)
   removeCollateral.lpRedeemed = wadToDecimal(event.params.lpRedeemed)
+  removeCollateral.isExitClaim = isExitClaim
 
   removeCollateral.blockNumber = event.block.number
   removeCollateral.blockTimestamp = event.block.timestamp
@@ -175,13 +192,16 @@ export function handleRemoveCollateral(event: RemoveCollateralEvent): void {
   removeCollateral.save()
 }
 
-// For a marked lender this is a claim of quote from the bucket's exit escrow, and the amount
-// can be zero.
+// For a marked lender this is a claim of quote from the bucket's exit escrow. The LP it redeems
+// left the bucket when the queue funded it, and the amount is zero when the claim only clears
+// funded LP too small to pay out.
 export function handleRemoveQuoteToken(event: RemoveQuoteTokenEvent): void {
   const pool = loadPool(event.address)
   const index = event.params.index.toI32()
   recordLenderAction(event, pool, event.params.lender)
   const bucket = refreshLend(event, pool, index, event.params.lender)
+  const isExitClaim = claimQuoteFromExitQueue(bucket, event.params.lender, event.params.amount, event.params.lpRedeemed)
+  if (isExitClaim) bucket.save()
 
   const removeQuoteToken = new RemoveQuoteToken(eventId(event))
   removeQuoteToken.pool = pool.id
@@ -190,6 +210,7 @@ export function handleRemoveQuoteToken(event: RemoveQuoteTokenEvent): void {
   removeQuoteToken.index = index
   removeQuoteToken.amount = wadToDecimal(event.params.amount)
   removeQuoteToken.lpRedeemed = wadToDecimal(event.params.lpRedeemed)
+  removeQuoteToken.isExitClaim = isExitClaim
 
   removeQuoteToken.blockNumber = event.block.number
   removeQuoteToken.blockTimestamp = event.block.timestamp
@@ -197,11 +218,60 @@ export function handleRemoveQuoteToken(event: RemoveQuoteTokenEvent): void {
   removeQuoteToken.save()
 }
 
-// Not implemented yet: the lender exit queue.
+// The lender's whole LP in the bucket joins the back of its exit queue. Until their claims have
+// redeemed all of it they cannot add, move or transfer LP in this bucket, and their removals
+// are claims from escrow.
+export function handleMarkQuoteForWithdrawal(event: MarkQuoteForWithdrawalEvent): void {
+  const pool = loadPool(event.address)
+  const index = event.params.index.toI32()
+  recordLenderAction(event, pool, event.params.lender)
+  const bucket = refreshLend(event, pool, index, event.params.lender)
+  openExitQueuePlace(pool, bucket, event.params.lender, event.params.lp, event.params.queueStart, event.block)
+  bucket.save()
 
-export function handleMarkQuoteForWithdrawal(event: MarkQuoteForWithdrawalEvent): void {}
+  const mark = new MarkQuoteForWithdrawal(eventId(event))
+  mark.pool = pool.id
+  mark.bucket = bucket.id
+  mark.lender = event.params.lender
+  mark.index = index
+  mark.lp = wadToDecimal(event.params.lp)
+  mark.queueStart = wadToDecimal(event.params.queueStart)
 
-export function handleExitQueueFunded(event: ExitQueueFundedEvent): void {}
+  mark.blockNumber = event.block.number
+  mark.blockTimestamp = event.block.timestamp
+  mark.transactionHash = event.transaction.hash
+  mark.save()
+}
+
+// The front of a bucket's queue was funded, or given up. Emitted inside the call that brought
+// quote or collateral to the bucket and before that call's own event, including the mark that
+// created the place being funded, so it is not counted as an action of its own. It names no
+// lender: a lender's funded LP is found from their ExitQueuePlace and the bucket's queueHead.
+export function handleExitQueueFunded(event: ExitQueueFundedEvent): void {
+  const pool = loadPool(event.address)
+  updatePool(pool, event.block)
+  pool.save()
+
+  const index = event.params.index.toI32()
+  const bucket = updateBucket(pool, index, event.block)
+  fundExitQueue(bucket, event.params.quote, event.params.collateral, event.params.queueHead)
+  bucket.save()
+
+  const funded = new ExitQueueFunded(eventId(event))
+  funded.pool = pool.id
+  funded.bucket = bucket.id
+  funded.index = index
+  funded.lp = wadToDecimal(event.params.lp)
+  funded.quote = wadToDecimal(event.params.quote)
+  funded.collateral = wadToDecimal(event.params.collateral)
+  funded.queueHead = wadToDecimal(event.params.queueHead)
+  funded.isGiveUp = event.params.quote.isZero() && event.params.collateral.isZero()
+
+  funded.blockNumber = event.block.number
+  funded.blockTimestamp = event.block.timestamp
+  funded.transactionHash = event.transaction.hash
+  funded.save()
+}
 
 /*************************************/
 /*** LP Management Event Handlers  ***/

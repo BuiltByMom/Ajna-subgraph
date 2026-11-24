@@ -1,7 +1,7 @@
 # Ajna v3 subgraph schema.
 #
-# Entities are added together with the handlers that write them. The lender exit queue, surplus
-# auctions and the PositionManager are not covered yet.
+# Entities are added together with the handlers that write them. Surplus auctions and the
+# PositionManager are not covered yet.
 #
 # Amounts, prices and rates are BigDecimal in whole units (the contracts' WAD values divided by
 # 1e18). Bucket indexes are Int. Counts, block numbers and timestamps are BigInt.
@@ -113,6 +113,19 @@ type Bucket @entity {
   t0debt: BigDecimal!
   lends: [Lend!]! @derivedFrom(field: "bucket")
   loans: [Loan!]! @derivedFrom(field: "bucket")
+
+  # EXIT QUEUE
+  # A lender who marks their LP for withdrawal takes a place on the bucket's exit queue. Quote and
+  # collateral that reach the bucket fund the places in the order they were marked: the funded LP
+  # leaves the bucket, and what paid for it waits in escrow for the lender to claim. Positions on
+  # the queue are measured in LP. These four fields follow the pool's events, which give them exactly.
+  queueHead: BigDecimal!         # LP the queue has funded or given up so far
+  queueTail: BigDecimal!         # LP marked so far; queueTail - queueHead is marked LP still waiting in the bucket
+  escrowQuote: BigDecimal!       # quote escrowed for funded places, not yet claimed
+  escrowCollateral: BigDecimal!  # collateral escrowed for funded places, not yet claimed
+  exitQueuePlaces: [ExitQueuePlace!]! @derivedFrom(field: "bucket")
+
+  # block at which the fields above the exit queue were read
   updatedAtBlockNumber: BigInt!
   updatedAtTimestamp: BigInt!
 }
@@ -131,8 +144,37 @@ type Lend @entity {
   # exit queue has funded at the worth it was funded at
   lpbValueInQuote: BigDecimal!
   depositTime: BigInt!          # timestamp the pool records for the lender's last deposit
+
+  # EXIT QUEUE
+  # As read when the Lend was last refreshed. The queue can fund a marked lender's LP without an
+  # event that names them, so liveLpb and fundedValueInQuote can be out of date: the lender's
+  # ExitQueuePlace and the bucket's queueHead always tell how much of their LP is funded.
+  marked: Boolean!              # whether the lender has marked their LP in this bucket for withdrawal
+  liveLpb: BigDecimal!          # LP still in the bucket and earning: all of lpb unless some of it is funded
+  fundedValueInQuote: BigDecimal! # worth of the funded LP, fixed when it was funded and claimable from escrow
+
   updatedAtBlockNumber: BigInt!
   updatedAtTimestamp: BigInt!
+}
+
+# A marked lender's place on a bucket's exit queue. It exists from the lender's
+# MarkQuoteForWithdrawal until their claims have redeemed all of its LP, and has the same id as
+# the lender's Lend. It follows the pool's events, so unlike a Lend it is exact after every event.
+#
+# The place covers the queue from queueStart to queueStart + lpb. The part of it below the
+# bucket's queueHead has been funded (or given up), and can be claimed with removeQuoteToken or
+# removeCollateral.
+type ExitQueuePlace @entity {
+  id: Bytes!                    # $bucketId + '|' + $lender
+  pool: Pool!
+  bucket: Bucket!
+  bucketIndex: Int!
+  lender: Bytes!                # address of the lender
+  account: Account!             # the same lender, as an Account
+  queueStart: BigDecimal!       # where the place starts on the queue, in LP; each claim moves it forward
+  lpb: BigDecimal!              # LP left in the place: what was marked, less what claims have redeemed
+  markedAtBlockNumber: BigInt!
+  markedAtTimestamp: BigInt!
 }
 
 enum LoanStatus {
@@ -182,6 +224,7 @@ type Account @entity {
   id: Bytes!                # account address
   lends: [Lend!]! @derivedFrom(field: "account")
   loans: [Loan!]! @derivedFrom(field: "account")
+  exitQueuePlaces: [ExitQueuePlace!]! @derivedFrom(field: "account")
   # the account's lender actions, and actions on its loans whoever performed them
   txCount: BigInt!
 }
@@ -287,8 +330,11 @@ type RemoveCollateral @entity(immutable: true) {
   bucket: Bucket!
   claimer: Bytes!           # address that removed the collateral
   index: Int!
-  amount: BigDecimal!
+  amount: BigDecimal!       # can be zero for an exit claim that only clears LP too small to pay out
   lpRedeemed: BigDecimal!
+  # true if the claimer was marked: the collateral came from the bucket's exit escrow, and the LP
+  # redeemed had already left the bucket
+  isExitClaim: Boolean!
   blockNumber: BigInt!
   blockTimestamp: BigInt!
   transactionHash: Bytes!
@@ -300,8 +346,44 @@ type RemoveQuoteToken @entity(immutable: true) {
   bucket: Bucket!
   lender: Bytes!
   index: Int!
-  amount: BigDecimal!
+  amount: BigDecimal!       # can be zero for an exit claim that only clears LP too small to pay out
   lpRedeemed: BigDecimal!
+  # true if the lender was marked: the quote came from the bucket's exit escrow, and the LP
+  # redeemed had already left the bucket
+  isExitClaim: Boolean!
+  blockNumber: BigInt!
+  blockTimestamp: BigInt!
+  transactionHash: Bytes!
+}
+
+# A lender marked all of their LP in a bucket for withdrawal, taking a place on its exit queue.
+type MarkQuoteForWithdrawal @entity(immutable: true) {
+  id: Bytes!
+  pool: Pool!
+  bucket: Bucket!
+  lender: Bytes!
+  index: Int!
+  lp: BigDecimal!           # LP placed on the queue
+  queueStart: BigDecimal!   # where the place starts on the queue, in LP
+  blockNumber: BigInt!
+  blockTimestamp: BigInt!
+  transactionHash: Bytes!
+}
+
+# LP at the front of a bucket's exit queue left the bucket. Emitted inside the call that brought
+# quote or collateral to the bucket, before that call's own event.
+type ExitQueueFunded @entity(immutable: true) {
+  id: Bytes!
+  pool: Pool!
+  bucket: Bucket!
+  index: Int!
+  lp: BigDecimal!           # LP that left the queue and the bucket
+  quote: BigDecimal!        # quote moved from the bucket's deposit to its exit escrow
+  collateral: BigDecimal!   # collateral moved from the bucket to its exit escrow
+  queueHead: BigDecimal!    # the queue's head after this event, in LP
+  # true if nothing was escrowed: the LP was worth less than one quote token unit and was given
+  # up for no payment
+  isGiveUp: Boolean!
   blockNumber: BigInt!
   blockTimestamp: BigInt!
   transactionHash: Bytes!

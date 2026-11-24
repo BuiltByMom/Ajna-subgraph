@@ -197,6 +197,25 @@ export function unmarkedLender(lp: BigInt, worth: BigInt, depositTime: BigInt): 
   return lender
 }
 
+// A lender on the exit queue: fundedWorth is the worth of the LP the queue has funded, and the
+// rest of their LP, liveLp, is still in the bucket.
+export function markedLender(
+  lp: BigInt,
+  liveLp: BigInt,
+  liveWorth: BigInt,
+  fundedWorth: BigInt,
+  depositTime: BigInt
+): LenderState {
+  const lender = new LenderState()
+  lender.lp = lp
+  lender.marked = true
+  lender.liveLp = liveLp
+  lender.liveWorth = liveWorth
+  lender.fundedWorth = fundedWorth
+  lender.depositTime = depositTime
+  return lender
+}
+
 export function mockLender(
   poolInfoUtils: Address,
   pool: Address,

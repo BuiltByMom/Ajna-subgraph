@@ -44,6 +44,9 @@ export function updateLend(pool: Pool, bucket: Bucket, lender: Address, block: e
   }
   lend.lpb = wadToDecimal(lp)
   lend.lpbValueInQuote = wadToDecimal(position.getLiveWorth_().plus(position.getFundedWorth_()))
+  lend.marked = position.getMarked_()
+  lend.liveLpb = wadToDecimal(position.getLiveLp_())
+  lend.fundedValueInQuote = wadToDecimal(position.getFundedWorth_())
   lend.depositTime = ERC20Pool.bind(poolAddress).lenderInfo(index, lender).getDepositTime_()
   lend.updatedAtBlockNumber = block.number
   lend.updatedAtTimestamp = block.timestamp

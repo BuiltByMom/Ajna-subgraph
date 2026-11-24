@@ -7,12 +7,14 @@ import {
   ApproveLPTransferors,
   DecreaseLPAllowance,
   DrawDebt,
+  ExitQueueFunded,
   Flashloan,
   ImproveLoan,
   IncreaseLPAllowance,
   InterestUpdateFailure,
   LoanCalled,
   LoanClosed,
+  MarkQuoteForWithdrawal,
   MoveLoan,
   MoveQuoteToken,
   RemoveCollateral,
@@ -442,6 +444,48 @@ export function createSetBorrowerDelegatesEvent(
     addressParam("borrower", borrower),
     new ethereum.EventParam("delegates", ethereum.Value.fromAddressArray(delegates)),
     new ethereum.EventParam("approved", ethereum.Value.fromBoolean(approved))
+  ]
+  return event
+}
+
+export function createMarkQuoteForWithdrawalEvent(
+  pool: Address,
+  blockNumber: i32,
+  logIndex: i32,
+  lender: Address,
+  index: i32,
+  lp: BigInt,
+  queueStart: BigInt
+): MarkQuoteForWithdrawal {
+  const event = changetype<MarkQuoteForWithdrawal>(newMockEvent())
+  placeEvent(event, pool, blockNumber, logIndex)
+  event.parameters = [
+    addressParam("lender", lender),
+    indexParam("index", index),
+    uintParam("lp", lp),
+    uintParam("queueStart", queueStart)
+  ]
+  return event
+}
+
+export function createExitQueueFundedEvent(
+  pool: Address,
+  blockNumber: i32,
+  logIndex: i32,
+  index: i32,
+  lp: BigInt,
+  quote: BigInt,
+  collateral: BigInt,
+  queueHead: BigInt
+): ExitQueueFunded {
+  const event = changetype<ExitQueueFunded>(newMockEvent())
+  placeEvent(event, pool, blockNumber, logIndex)
+  event.parameters = [
+    indexParam("index", index),
+    uintParam("lp", lp),
+    uintParam("quote", quote),
+    uintParam("collateral", collateral),
+    uintParam("queueHead", queueHead)
   ]
   return event
 }

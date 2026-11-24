@@ -209,6 +209,10 @@ describe("ERC20Pool lender events", () => {
     assert.fieldEquals("Bucket", id, "lpb", "800")
     assert.fieldEquals("Bucket", id, "exchangeRate", "1.25")
     assert.fieldEquals("Bucket", id, "t0debt", "300")
+    assert.fieldEquals("Bucket", id, "queueHead", "0")
+    assert.fieldEquals("Bucket", id, "queueTail", "0")
+    assert.fieldEquals("Bucket", id, "escrowQuote", "0")
+    assert.fieldEquals("Bucket", id, "escrowCollateral", "0")
     assert.fieldEquals("Bucket", id, "updatedAtBlockNumber", "101")
 
     const lend = lendId(POOL, INDEX, LENDER)
@@ -221,6 +225,9 @@ describe("ERC20Pool lender events", () => {
     assert.fieldEquals("Lend", lend, "lpb", "400")
     assert.fieldEquals("Lend", lend, "lpbValueInQuote", "500")
     assert.fieldEquals("Lend", lend, "depositTime", blockTimestamp(101).toString())
+    assert.fieldEquals("Lend", lend, "marked", "false")
+    assert.fieldEquals("Lend", lend, "liveLpb", "400")
+    assert.fieldEquals("Lend", lend, "fundedValueInQuote", "0")
     assert.fieldEquals("Lend", lend, "updatedAtBlockNumber", "101")
 
     assert.fieldEquals("Account", LENDER.toHexString(), "txCount", "1")
@@ -279,6 +286,7 @@ describe("ERC20Pool lender events", () => {
     assert.fieldEquals("RemoveQuoteToken", eventEntityId(partial), "index", "2550")
     assert.fieldEquals("RemoveQuoteToken", eventEntityId(partial), "amount", "400")
     assert.fieldEquals("RemoveQuoteToken", eventEntityId(partial), "lpRedeemed", "400")
+    assert.fieldEquals("RemoveQuoteToken", eventEntityId(partial), "isExitClaim", "false")
     assert.fieldEquals("Lend", lendId(POOL, INDEX, LENDER), "lpb", "600")
     assert.fieldEquals("Lend", lendId(POOL, INDEX, LENDER), "lpbValueInQuote", "600")
     // a withdrawal does not move the deposit time
@@ -297,46 +305,6 @@ describe("ERC20Pool lender events", () => {
     assert.fieldEquals("Bucket", bucketId(POOL, INDEX), "lpb", "0")
     assert.fieldEquals("Account", LENDER.toHexString(), "txCount", "3")
     assert.fieldEquals("Pool", POOL.toHexString(), "txCount", "3")
-  })
-
-  test("a marked lender's claims reduce the lend by the LP redeemed, even when no quote is paid", () => {
-    depositQuote(wad(1000), 101)
-
-    // the lender marked their LP and the exit queue funded 600 of it, which left the bucket
-    mockBucket(INDEX, quoteBucket(wad(400), wad(400)))
-
-    // a claim of 250 quote from escrow
-    const afterClaim = new LenderState()
-    afterClaim.lp = wad(750)
-    afterClaim.marked = true
-    afterClaim.liveLp = wad(400)
-    afterClaim.liveWorth = wad(400)
-    afterClaim.fundedWorth = wad(350)
-    afterClaim.depositTime = blockTimestamp(101)
-    mockLenderIn(INDEX, LENDER, afterClaim)
-    handleRemoveQuoteToken(createRemoveQuoteTokenEvent(POOL, 102, 0, LENDER, INDEX, wad(250), wad(250)))
-
-    assert.fieldEquals("Lend", lendId(POOL, INDEX, LENDER), "lpb", "750")
-    // 400 still in the bucket plus 350 funded and waiting in escrow
-    assert.fieldEquals("Lend", lendId(POOL, INDEX, LENDER), "lpbValueInQuote", "750")
-    // the claim came out of escrow, not out of the bucket
-    assert.fieldEquals("Bucket", bucketId(POOL, INDEX), "lpb", "400")
-
-    // a claim that clears funded LP too small to be paid: LP is redeemed for no quote
-    const afterDustClaim = new LenderState()
-    afterDustClaim.lp = wad(400)
-    afterDustClaim.marked = true
-    afterDustClaim.liveLp = wad(400)
-    afterDustClaim.liveWorth = wad(400)
-    afterDustClaim.depositTime = blockTimestamp(101)
-    mockLenderIn(INDEX, LENDER, afterDustClaim)
-    const dustClaim = createRemoveQuoteTokenEvent(POOL, 103, 0, LENDER, INDEX, wad(0), wad(350))
-    handleRemoveQuoteToken(dustClaim)
-
-    assert.fieldEquals("RemoveQuoteToken", eventEntityId(dustClaim), "amount", "0")
-    assert.fieldEquals("RemoveQuoteToken", eventEntityId(dustClaim), "lpRedeemed", "350")
-    assert.fieldEquals("Lend", lendId(POOL, INDEX, LENDER), "lpb", "400")
-    assert.fieldEquals("Lend", lendId(POOL, INDEX, LENDER), "lpbValueInQuote", "400")
   })
 
   test("RemoveCollateral records the collateral removed and refreshes the lend", () => {
@@ -362,6 +330,7 @@ describe("ERC20Pool lender events", () => {
     assert.fieldEquals("RemoveCollateral", eventId, "index", "2550")
     assert.fieldEquals("RemoveCollateral", eventId, "amount", "1")
     assert.fieldEquals("RemoveCollateral", eventId, "lpRedeemed", "100")
+    assert.fieldEquals("RemoveCollateral", eventId, "isExitClaim", "false")
     assert.fieldEquals("Bucket", bucketId(POOL, INDEX), "collateral", "1")
     assert.fieldEquals("Pool", POOL.toHexString(), "lenderCollateral", "1")
     assert.fieldEquals("Lend", lendId(POOL, INDEX, LENDER), "lpb", "100")

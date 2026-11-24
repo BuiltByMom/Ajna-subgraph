@@ -10,9 +10,10 @@ In progress. The subgraph indexes:
 - buckets and lenders' positions in them (`AddQuoteToken`, `MoveQuoteToken`, `RemoveQuoteToken`, `AddCollateral`, `RemoveCollateral`)
 - LP transfers, allowances and approved transferors
 - loans (`DrawDebt`, `RepayDebt`, `MoveLoan`, `ImproveLoan`, `LoanClosed`, `LoanCalled`) and borrower delegates
+- the lender exit queue (`MarkQuoteForWithdrawal`, `ExitQueueFunded`, and claims from escrow)
 - flashloans, interest rate changes and interest update failures
 
-The handlers for the lender exit queue, surplus auctions and the PositionManager are still empty. Until they are written, a pool or bucket is not refreshed when one of those events changes it.
+The handlers for surplus auctions and the PositionManager are still empty. Until they are written, a pool is not refreshed when a surplus auction event changes it.
 
 ## Setup
 
@@ -66,7 +67,10 @@ Mappings must not assume a network has one factory, PositionManager or reader co
 
 The entity that records an event (`AddQuoteToken`, `DrawDebt` and so on) keeps that event's own amounts.
 
-A few pool fields are added up from events instead, because the contract changes them by exactly an event's amount: `txCount`, the flashloan totals, `interestUpdateFailures`, `pledgedCollateral` and `lenderCollateral`. `loansCount` follows the loans' status.
+Some values are added up from events instead, because the contract changes them by exactly an event's amount and nowhere else:
+
+- on the pool: `txCount`, the flashloan totals, `interestUpdateFailures`, `pledgedCollateral` and `lenderCollateral`. `loansCount` follows the loans' status.
+- the exit queue: a bucket's `queueHead`, `queueTail`, `escrowQuote` and `escrowCollateral`, and every `ExitQueuePlace`. These are exact after each event, not only at the end of the block.
 
 If the reader contracts revert for a pool, which can happen after the pool emits `InterestUpdateFailure`, the pool keeps its last state and its `updatedAtBlockNumber` does not advance.
 
@@ -82,9 +86,22 @@ A borrower can hold any number of loans in a pool. Each has its own id, bucket, 
 
 A loan with debt can be called once the block timestamp is past `expiry`, or while its collateral at the bucket price is worth less than 1.05 times its debt. Work that out from `t0debt`, `collateralPledged`, `bucket.bucketPrice`, `expiry` and the pool's current inflator. `thresholdPrice` rounds differently from the pool's check, so do not compare it with the bucket price to decide.
 
+### Exit queue
+
+A lender who calls `markQuoteForWithdrawal` puts all of their LP in a bucket on that bucket's exit queue. Until their claims have redeemed all of it, they cannot add, move or transfer LP there.
+
+- **Places.** An `ExitQueuePlace` is the lender's place on the queue, from `queueStart` to `queueStart + lpb`, measured in LP. It has the same id as the lender's `Lend`, and is removed when its last LP is claimed.
+- **Funding.** Quote or collateral that reaches the bucket funds the front of the queue. Each `ExitQueueFunded` moves the bucket's `queueHead` forward and adds what paid for the LP to `escrowQuote` or `escrowCollateral`. The funded LP leaves the bucket's `lpb`, but the lender still holds it until they claim. An event with `isGiveUp` set escrowed nothing: LP worth less than one quote token unit was dropped from the queue for no payment.
+- **How much of a place is funded.** `ExitQueueFunded` does not name the lenders it funds, so a `Lend` is not refreshed by it and its `liveLpb` and `fundedValueInQuote` can be out of date. The part of a place below the bucket's `queueHead` is funded: `min(lpb, max(0, queueHead - queueStart))`.
+- **Claims.** A marked lender's `RemoveQuoteToken` or `RemoveCollateral` is a claim from escrow and has `isExitClaim` set. It redeems LP from the front of the place and can pay either token. `amount` can be zero, when the claim only clears funded LP too small to pay out.
+
+`isExitClaim` is decided by whether the lender had a place when the event was handled, not by a contract read, because a lender can mark and claim everything within one block.
+
+Deposit maturity is not indexed. `PoolInfoUtils.bucketLendable` gives how much of a bucket's deposit can fund loans now.
+
 ### Retention
 
-A `Lend` is removed when the lender has no LP left in the bucket. A `BorrowerDelegate`, `LPAllowance` or `LPTransferorList` is removed when it is revoked or used up. Pools, buckets and loans are kept: a closed loan stays, with the bucket and expiry it had.
+A `Lend` is removed when the lender has no LP left in the bucket, and an `ExitQueuePlace` when its last LP is claimed. A `BorrowerDelegate`, `LPAllowance` or `LPTransferorList` is removed when it is revoked or used up. Pools, buckets and loans are kept: a closed loan stays, with the bucket and expiry it had.
 
 ### Differences from the v2 schema
 
@@ -96,15 +113,18 @@ This covers the entities written so far. Fields and entities that belong to the 
 | `Pool` | Adds `factory`, `loanTerm`, `debt`, `rateAtTarget`, `utilization`, `escrowedQuote`, `availableQuote`, `lenderCollateral`, the six surplus fields, `interestUpdateFailures` and `updatedAt*`. `t0debt` now holds t0 debt (v2 stored the debt there). `loansCount` counts loans with debt. Prices (`hpb`, `htp`, `lup`), fees, reserves, burn epoch, bonds, liquidations, `totalInterestEarned`, `maxBorrower`, `minDebtAmount`, `actualUtilization`, `targetUtilization`, `poolType` and the ERC721 fields are gone. |
 | `Pool.txCount`, `Token.txCount`, `Account.txCount` | Count actions. `UpdateInterestRate`, `InterestUpdateFailure`, `LoanClosed` and `ImproveLoan` are emitted as part of another action and are not counted. An account's count covers its lender actions and every action on its loans, including a call or a move by someone else. |
 | `Token` | `pools` is split into the derived `poolsAsCollateral` and `poolsAsQuote`. `tokenType` and `totalSupply` are gone. |
-| `Bucket` | `lends` is derived. Adds `t0debt`, `loans` and `updatedAt*`. |
-| `Lend` | Adds `account` and `updatedAt*`. `lpbValueInQuote` includes LP the exit queue has funded. |
+| `Bucket` | `lends` is derived. Adds `t0debt`, `loans`, `queueHead`, `queueTail`, `escrowQuote`, `escrowCollateral`, `exitQueuePlaces` and `updatedAt*`. `deposit`, `collateral` and `lpb` exclude what the exit queue has moved to escrow. |
+| `Lend` | Adds `account`, `marked`, `liveLpb`, `fundedValueInQuote` and `updatedAt*`. `lpbValueInQuote` includes LP the exit queue has funded. |
+| `ExitQueuePlace` | New. |
 | `Loan` | One per loan id, no longer one per borrower, and kept after it closes. The id is the pool address, `|`, and the loan id. Adds `loanId`, `counter`, `account`, `bucket`, `bucketIndex`, `status`, `t0Tp`, `inflatorAtDraw`, `expiry`, `movedFrom`, `movedTo`, `call` and the created, closed and updated blocks. `inLiquidation`, `liquidationAuction`, `t0Np` and `tokenIdsPledged` are gone. |
-| `Account` | `lends` and `loans` are derived. `pools` and the liquidation, reserve auction and grant fields are gone. |
+| `Account` | `lends`, `loans` and `exitQueuePlaces` are derived. `pools` and the liquidation, reserve auction and grant fields are gone. |
 | `BorrowerDelegate` | New. |
 | `LPAllowanceList` | `allowances` is derived, and an empty list is kept. Ids are built from the raw address bytes. |
 | `LPTransferorList` | Ids are built from the raw address bytes. |
 | `PoolCreated` | Adds `collateralToken` and `quoteToken`. `poolType` is gone. |
 | `AddQuoteToken`, `MoveQuoteToken`, `RemoveQuoteToken` | `lup` is gone. |
+| `RemoveQuoteToken`, `RemoveCollateral` | Add `isExitClaim`. `amount` can be zero. |
+| `MarkQuoteForWithdrawal`, `ExitQueueFunded` | New. |
 | `DrawDebt`, `RepayDebt` | Add `loan` and `bucket`. `lup` is gone. |
 | `MoveLoan`, `ImproveLoan`, `LoanClosed`, `LoanCalled`, `SetBorrowerDelegates` | New. They replace `Kick`, `Take`, `BucketTake`, `BucketTakeLPAwarded`, `Settle`, `AuctionSettle`, `BondWithdrawn`, `LoanStamped`, `BucketBankruptcy` and `LiquidationAuction`. |
 | `TransferLP` | Adds `pool`. |

@@ -1,5 +1,6 @@
-import { Address, DataSourceContext, dataSource } from "@graphprotocol/graph-ts"
+import { Address, log } from "@graphprotocol/graph-ts"
 
+import { Pool } from "../../generated/schema"
 import {
   FACTORIES,
   POOL_INFO_UTILS,
@@ -8,8 +9,8 @@ import {
 } from "../config/deployments"
 
 // Ajna v3 has one pool factory per loan term, each with its own PositionManager, so a network can
-// hold several deployments. Nothing here may assume there is only one: handlers find theirs by the
-// address that emitted the event, and pool handlers read it from their data source context.
+// hold several deployments. Nothing here may assume there is only one: a handler finds its
+// deployment from the address that emitted the event, or from the pool's factory.
 export class Deployment {
   constructor(
     public factory: Address,
@@ -51,29 +52,17 @@ export function deploymentForPositionManager(positionManager: Address): Deployme
   return i == -1 ? null : deploymentAt(i)
 }
 
-const FACTORY_KEY = "factory"
-const POOL_INFO_UTILS_KEY = "poolInfoUtils"
-const POOL_INFO_UTILS_MULTICALL_KEY = "poolInfoUtilsMulticall"
-
-// Context handed to each ERC20Pool data source when its factory creates the pool.
-export function poolContext(deployment: Deployment): DataSourceContext {
-  const context = new DataSourceContext()
-  context.setBytes(FACTORY_KEY, deployment.factory)
-  context.setBytes(POOL_INFO_UTILS_KEY, deployment.poolInfoUtils)
-  context.setBytes(POOL_INFO_UTILS_MULTICALL_KEY, deployment.poolInfoUtilsMulticall)
-  return context
-}
-
-// The three readers below are for ERC20Pool handlers only: they read the context set by poolContext.
-
-export function poolFactory(): Address {
-  return Address.fromBytes(dataSource.context().getBytes(FACTORY_KEY))
-}
-
-export function poolInfoUtils(): Address {
-  return Address.fromBytes(dataSource.context().getBytes(POOL_INFO_UTILS_KEY))
-}
-
-export function poolInfoUtilsMulticall(): Address {
-  return Address.fromBytes(dataSource.context().getBytes(POOL_INFO_UTILS_MULTICALL_KEY))
+// The deployment a pool belongs to, which holds the reader contracts to use for it. It is found
+// through the pool's factory, so it works in every data source.
+export function poolDeployment(pool: Pool): Deployment {
+  const deployment = deploymentForFactory(Address.fromBytes(pool.factory))
+  if (deployment == null) {
+    // pools are only created by configured factories, so the generated address lists are out of
+    // sync with the manifest
+    log.critical("poolDeployment: factory {} of pool {} is not a configured deployment", [
+      pool.factory.toHexString(),
+      pool.id.toHexString()
+    ])
+  }
+  return deployment!
 }

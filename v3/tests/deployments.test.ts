@@ -1,14 +1,10 @@
-import { assert, dataSourceMock, describe, test } from "matchstick-as/assembly/index"
+import { assert, describe, test } from "matchstick-as/assembly/index"
 
 import {
   Deployment,
   allDeployments,
   deploymentForFactory,
-  deploymentForPositionManager,
-  poolContext,
-  poolFactory,
-  poolInfoUtils,
-  poolInfoUtilsMulticall
+  deploymentForPositionManager
 } from "../src/utils/deployments"
 import { testAddress } from "./utils/common"
 
@@ -42,20 +38,5 @@ describe("deployments", () => {
   test("an address that is not configured has no deployment", () => {
     assert.assertNull(deploymentForFactory(testAddress(0xdead)))
     assert.assertNull(deploymentForPositionManager(testAddress(0xdead)))
-  })
-
-  test("a pool data source reads back the factory and readers of its own deployment", () => {
-    const deployments = allDeployments()
-
-    for (let i = 0; i < deployments.length; i++) {
-      const deployment = deployments[i]
-      dataSourceMock.setContext(poolContext(deployment))
-
-      assert.addressEquals(deployment.factory, poolFactory())
-      assert.addressEquals(deployment.poolInfoUtils, poolInfoUtils())
-      assert.addressEquals(deployment.poolInfoUtilsMulticall, poolInfoUtilsMulticall())
-    }
-
-    dataSourceMock.resetValues()
   })
 })

@@ -1,14 +1,281 @@
 # Ajna v3 subgraph schema.
 #
-# Only what the handlers written so far populate. Entities are added together with the handlers
-# that write them.
+# Entities are added together with the handlers that write them. Loans, the lender exit queue,
+# surplus auctions and the PositionManager are not covered yet.
+#
+# Amounts, prices and rates are BigDecimal in whole units (the contracts' WAD values divided by
+# 1e18). Bucket indexes are Int. Counts, block numbers and timestamps are BigInt.
+#
+# Pool, Bucket and Lend hold contract state as it was at the end of the block of the last event
+# that refreshed them, recorded in updatedAtBlockNumber. Interest accrues between events, so a
+# value can be older than the block being queried.
+
+type Token @entity {
+  id: Bytes!                # token address
+  symbol: String!
+  name: String!
+  decimals: Int!
+  poolCount: BigInt!        # pools using this token as collateral or as quote
+  poolsAsCollateral: [Pool!]! @derivedFrom(field: "collateralToken")
+  poolsAsQuote: [Pool!]! @derivedFrom(field: "quoteToken")
+  txCount: BigInt!          # actions across all pools that use this token
+}
+
+
+  # # # # # # # # #
+  # POOL ENTITIES #
+  # # # # # # # # #
+
+# Ajna v3 has one factory per loan term. A token pair has at most one pool per factory.
+type PoolFactory @entity {
+  id: Bytes!                # factory address
+  loanTerm: BigInt!         # term of every loan in this factory's pools, in seconds
+  poolCount: BigInt!        # number of pools deployed by the factory
+  pools: [Pool!]! @derivedFrom(field: "factory")
+}
+
+type Pool @entity {
+  id: Bytes!                         # pool address
+  factory: PoolFactory!              # factory that deployed the pool
+  loanTerm: BigInt!                  # term of every loan in the pool, in seconds
+  createdAtBlockNumber: BigInt!
+  createdAtTimestamp: BigInt!
+  collateralToken: Token!
+  quoteToken: Token!
+  # actions performed on the pool; a call that emits several events is counted once
+  txCount: BigInt!
+
+  # DEPOSITS AND DEBT
+  poolSize: BigDecimal!              # quote deposited in buckets, excluding quote escrowed for marked lenders
+  debt: BigDecimal!                  # debt owed by borrowers, at the pending inflator
+  inflator: BigDecimal!              # pending inflator
+
+  # RATES
+  borrowRate: BigDecimal!            # annual interest rate paid by borrowers
+  rateAtTarget: BigDecimal!          # borrow rate the adaptive curve gives at target utilization
+  utilization: BigDecimal!           # debt over deposits, at most 1
+  # annual rate lenders earn on average: borrowRate * utilization * 0.96. A bucket's own rate
+  # depends on how much of that bucket's deposit is lent.
+  lendRate: BigDecimal!
+
+  # TOKEN BALANCES
+  quoteTokenBalance: BigDecimal!     # quote token held by the pool contract
+  collateralBalance: BigDecimal!     # collateral token held by the pool contract
+  escrowedQuote: BigDecimal!         # quote escrowed for marked lenders, not yet claimed
+  availableQuote: BigDecimal!        # quote balance not owed to marked lenders or the surplus auction
+
+  # SURPLUS
+  quoteSurplus: BigDecimal!                  # excess quote not yet in an auction lot
+  quoteSurplusClaimable: BigDecimal!         # quote a surplus auction kick would add to the lot now
+  quoteSurplusLotRemaining: BigDecimal!      # quote left in the current or last auction lot
+  collateralSurplus: BigDecimal!             # free collateral not yet in an auction lot
+  collateralSurplusClaimable: BigDecimal!    # collateral a surplus auction kick would add to the lot now
+  collateralSurplusLotRemaining: BigDecimal! # collateral left in the current or last auction lot
+
+  # FLASHLOANS
+  quoteTokenFlashloaned: BigDecimal!         # total quote token lent in flashloans
+  collateralFlashloaned: BigDecimal!         # total collateral token lent in flashloans
+
+  # number of InterestUpdateFailure events: times interest accrual or a rate update failed and
+  # the pool carried on at its stored values
+  interestUpdateFailures: BigInt!
+
+  buckets: [Bucket!]! @derivedFrom(field: "pool")
+
+  # block at which the fields above, other than the counters and flashloan totals, were read
+  updatedAtBlockNumber: BigInt!
+  updatedAtTimestamp: BigInt!
+}
+
+type Bucket @entity {
+  id: Bytes!                 # $poolAddress + '#' + $bucketIndex
+  pool: Pool!
+  poolAddress: String!
+  bucketIndex: Int!
+  bucketPrice: BigDecimal!
+  deposit: BigDecimal!       # quote in the bucket including interest, excluding quote escrowed for marked lenders
+  collateral: BigDecimal!    # collateral in the bucket available to its LP holders
+  lpb: BigDecimal!           # LP outstanding in the bucket; LP the exit queue has funded has left it
+  exchangeRate: BigDecimal!  # quote value of one LP
+  lends: [Lend!]! @derivedFrom(field: "bucket")
+  updatedAtBlockNumber: BigInt!
+  updatedAtTimestamp: BigInt!
+}
+
+# A lender's LP in one bucket. Removed when the lender has no LP left there.
+type Lend @entity {
+  id: Bytes!                    # $bucketId + '|' + $lender
+  pool: Pool!
+  poolAddress: String!
+  bucket: Bucket!
+  bucketIndex: Int!
+  lender: Bytes!                # address of the lender
+  account: Account!             # the same lender, as an Account
+  lpb: BigDecimal!              # all LP the lender holds in the bucket
+  # quote value of that LP: LP still in the bucket at the bucket's exchange rate, plus LP the
+  # exit queue has funded at the worth it was funded at
+  lpbValueInQuote: BigDecimal!
+  depositTime: BigInt!          # timestamp the pool records for the lender's last deposit
+  updatedAtBlockNumber: BigInt!
+  updatedAtTimestamp: BigInt!
+}
+
+type Account @entity {
+  id: Bytes!                # account address
+  lends: [Lend!]! @derivedFrom(field: "account")
+  txCount: BigInt!          # lender actions performed by the account
+}
+
+# LP transferors a lender has approved in a pool. Removed when none are left.
+type LPTransferorList @entity {
+  id: Bytes!                # $poolAddress + '|' + $lender
+  pool: Pool!
+  lender: Bytes!
+  transferors: [Bytes!]!    # addresses allowed to transfer LP to the lender
+}
+
+# The LP allowances a lender has granted one spender in a pool.
+type LPAllowanceList @entity {
+  id: Bytes!                # $poolAddress + '|' + $lender + '|' + $spender
+  pool: Pool!
+  lender: Bytes!            # owner of the LP
+  spender: Bytes!           # address the LP may be transferred to
+  allowances: [LPAllowance!]! @derivedFrom(field: "allowanceList")
+}
+
+# An LP allowance in a single bucket. Removed when it is used, revoked or reduced to zero.
+type LPAllowance @entity {
+  id: Bytes!                # $allowanceListId + '|' + $bucketIndex
+  allowanceList: LPAllowanceList!
+  index: Int!               # bucket index
+  amount: BigDecimal!       # LP the spender may receive from this bucket
+}
+
+
+  # # # # # # # # # # # # #
+  # POOL FACTORY EVENTS   #
+  # # # # # # # # # # # # #
 
 type PoolCreated @entity(immutable: true) {
-  id: Bytes!              # transaction hash + log index
-  pool: Bytes!            # address of the pool that was created
-  factory: Bytes!         # factory that created it; each factory deploys pools of one loan term
-  collateralToken: Bytes! # address of the pool's collateral token
-  quoteToken: Bytes!      # address of the pool's quote token
+  id: Bytes!                # transaction hash + log index
+  pool: Pool!
+  factory: PoolFactory!
+  collateralToken: Bytes!   # address of the pool's collateral token
+  quoteToken: Bytes!        # address of the pool's quote token
+  blockNumber: BigInt!
+  blockTimestamp: BigInt!
+  transactionHash: Bytes!
+}
+
+
+  # # # # # # # #
+  # POOL EVENTS #
+  # # # # # # # #
+
+type AddCollateral @entity(immutable: true) {
+  id: Bytes!
+  pool: Pool!
+  bucket: Bucket!
+  actor: Bytes!             # address that added the collateral
+  index: Int!
+  amount: BigDecimal!
+  lpAwarded: BigDecimal!
+  blockNumber: BigInt!
+  blockTimestamp: BigInt!
+  transactionHash: Bytes!
+}
+
+type AddQuoteToken @entity(immutable: true) {
+  id: Bytes!
+  pool: Pool!
+  bucket: Bucket!
+  lender: Bytes!
+  index: Int!
+  amount: BigDecimal!
+  lpAwarded: BigDecimal!
+  blockNumber: BigInt!
+  blockTimestamp: BigInt!
+  transactionHash: Bytes!
+}
+
+type MoveQuoteToken @entity(immutable: true) {
+  id: Bytes!
+  pool: Pool!
+  lender: Bytes!
+  from: Bucket!
+  to: Bucket!
+  amount: BigDecimal!
+  lpRedeemedFrom: BigDecimal!
+  lpAwardedTo: BigDecimal!
+  blockNumber: BigInt!
+  blockTimestamp: BigInt!
+  transactionHash: Bytes!
+}
+
+type RemoveCollateral @entity(immutable: true) {
+  id: Bytes!
+  pool: Pool!
+  bucket: Bucket!
+  claimer: Bytes!           # address that removed the collateral
+  index: Int!
+  amount: BigDecimal!
+  lpRedeemed: BigDecimal!
+  blockNumber: BigInt!
+  blockTimestamp: BigInt!
+  transactionHash: Bytes!
+}
+
+type RemoveQuoteToken @entity(immutable: true) {
+  id: Bytes!
+  pool: Pool!
+  bucket: Bucket!
+  lender: Bytes!
+  index: Int!
+  amount: BigDecimal!
+  lpRedeemed: BigDecimal!
+  blockNumber: BigInt!
+  blockTimestamp: BigInt!
+  transactionHash: Bytes!
+}
+
+type TransferLP @entity(immutable: true) {
+  id: Bytes!
+  pool: Pool!
+  owner: Bytes!             # lender the LP was transferred from
+  newOwner: Bytes!          # lender the LP was transferred to
+  indexes: [Int!]!          # every bucket index named in the call, with or without LP to transfer
+  lp: BigDecimal!           # total LP transferred across those buckets
+  blockNumber: BigInt!
+  blockTimestamp: BigInt!
+  transactionHash: Bytes!
+}
+
+type Flashloan @entity(immutable: true) {
+  id: Bytes!
+  pool: Pool!
+  token: Token!             # the pool's quote or collateral token
+  borrower: Bytes!          # contract that received the loan
+  amount: BigDecimal!
+  blockNumber: BigInt!
+  blockTimestamp: BigInt!
+  transactionHash: Bytes!
+}
+
+# The pool stored a new borrow rate after an action changed its utilization.
+type UpdateInterestRate @entity(immutable: true) {
+  id: Bytes!
+  pool: Pool!
+  oldBorrowRate: BigDecimal!
+  newBorrowRate: BigDecimal!
+  blockNumber: BigInt!
+  blockTimestamp: BigInt!
+  transactionHash: Bytes!
+}
+
+# Interest accrual or a rate update reverted inside the pool, which carried on at its stored values.
+type InterestUpdateFailure @entity(immutable: true) {
+  id: Bytes!
+  pool: Pool!
   blockNumber: BigInt!
   blockTimestamp: BigInt!
   transactionHash: Bytes!

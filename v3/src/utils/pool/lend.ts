@@ -1,0 +1,51 @@
+import { Address, BigInt, Bytes, ethereum, store } from "@graphprotocol/graph-ts"
+
+import { Bucket, Lend, Pool } from "../../../generated/schema"
+import { ERC20Pool } from "../../../generated/templates/ERC20Pool/ERC20Pool"
+import { PoolInfoUtils } from "../../../generated/templates/ERC20Pool/PoolInfoUtils"
+
+import { ensureAccount } from "../account"
+import { ZERO_BI } from "../constants"
+import { wadToDecimal } from "../convert"
+import { poolDeployment } from "../deployments"
+
+export function getLendId(bucketId: Bytes, lender: Bytes): Bytes {
+  return bucketId.concat(Bytes.fromUTF8("|")).concat(lender)
+}
+
+// Sets the lender's Lend in the bucket to what the pool holds for them, removing it if they have
+// no LP left there.
+//
+// The position is read from chain rather than worked out from the event: a marked lender's
+// removals are claims from escrow that follow different arithmetic, and TransferLP does not say
+// how much LP moved in each bucket.
+export function updateLend(pool: Pool, bucket: Bucket, lender: Address, block: ethereum.Block): void {
+  const poolAddress = Address.fromBytes(pool.id)
+  const index = BigInt.fromI32(bucket.bucketIndex)
+  const lendId = getLendId(bucket.id, lender)
+
+  const position = PoolInfoUtils.bind(poolDeployment(pool).poolInfoUtils).lenderPosition(poolAddress, index, lender)
+  const lp = position.getLp_()
+  let lend = Lend.load(lendId)
+  if (lp.equals(ZERO_BI)) {
+    if (lend != null) store.remove("Lend", lendId.toHexString())
+    return
+  }
+
+  if (lend == null) {
+    lend = new Lend(lendId)
+    lend.pool = pool.id
+    lend.poolAddress = pool.id.toHexString()
+    lend.bucket = bucket.id
+    lend.bucketIndex = bucket.bucketIndex
+    lend.lender = lender
+    lend.account = lender
+    ensureAccount(lender)
+  }
+  lend.lpb = wadToDecimal(lp)
+  lend.lpbValueInQuote = wadToDecimal(position.getLiveWorth_().plus(position.getFundedWorth_()))
+  lend.depositTime = ERC20Pool.bind(poolAddress).lenderInfo(index, lender).getDepositTime_()
+  lend.updatedAtBlockNumber = block.number
+  lend.updatedAtTimestamp = block.timestamp
+  lend.save()
+}

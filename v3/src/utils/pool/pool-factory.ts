@@ -15,3 +15,9 @@ export function loadOrCreateFactory(factoryAddress: Address): PoolFactory {
   }
   return factory
 }
+
+// An entity that points at a factory needs the PoolFactory to exist, even if the factory has
+// deployed no pool yet.
+export function ensureFactory(factoryAddress: Address): void {
+  if (PoolFactory.load(factoryAddress) == null) loadOrCreateFactory(factoryAddress).save()
+}

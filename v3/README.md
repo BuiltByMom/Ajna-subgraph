@@ -13,8 +13,9 @@ In progress. The subgraph indexes:
 - the lender exit queue (`MarkQuoteForWithdrawal`, `ExitQueueFunded`, and claims from escrow)
 - surplus auctions of quote and of collateral (`KickQuoteSurplusAuction`, `TakeQuoteSurplus`, `KickCollateralSurplusAuction`, `TakeCollateralSurplus`)
 - flashloans, interest rate changes and interest update failures
+- PositionManager positions and the LP they hold in each bucket (`Mint`, `MemorializePosition`, `MoveLiquidity`, `RedeemPosition`, `Burn`), with the NFT's transfers and approvals
 
-Every pool event is handled. The handlers for the PositionManager are still empty.
+Every event of the pool factory, the pool and the PositionManager is handled. The subgraph has not yet been run against a graph-node.
 
 ## Setup
 
@@ -60,10 +61,10 @@ Mappings must not assume a network has one factory, PositionManager or reader co
 
 ### Where state comes from
 
-`Pool`, `Bucket`, `Lend` and `Loan` are set from contract reads, not from event amounts. A read made while handling an event returns state as of the end of that event's block, so:
+`Pool`, `Bucket`, `Lend`, `Loan` and `PositionLend` are set from contract reads, not from event amounts. A read made while handling an event returns state as of the end of that event's block, so:
 
 - these entities always hold end-of-block state, and events in the same block write the same values
-- the pool, each bucket and each loan are read at most once per block
+- the pool, each bucket, each loan and each position's LP in a bucket are read at most once per block
 - a loan that is repaid, moved or called later in the block it opens in already reads as closed when its `DrawDebt` is handled
 - `updatedAtBlockNumber` says which block an entity was last read at. Interest accrues between events, so a value can be older than the block you query.
 
@@ -75,6 +76,7 @@ Some values are added up from events instead, because the contract changes them 
 - surplus auctions: every `SurplusAuction`.
 - the exit queue: a bucket's `queueHead`, `queueTail`, `escrowQuote` and `escrowCollateral`, and every `ExitQueuePlace`. These are right after each event, not only at the end of the block.
 - LP allowances.
+- positions: a `Position`'s pool and owner, and a `PositionManager`'s `positionCount`.
 
 ### Precision
 
@@ -120,25 +122,42 @@ A pool sells its surplus quote and its surplus collateral in two separate auctio
 
 The kick and take events of the two kinds have the same shape and are stored as `SurplusAuctionKick` and `SurplusAuctionTake`, with a `kind`.
 
+### Positions
+
+A PositionManager issues NFTs that hold LP for their owners. Each pool factory has its own manager, and each manager numbers its tokens from 1, so a `Position`'s id is the manager's address, `|`, and the token id. A position holds LP in one pool only: the pool named when it was minted.
+
+- **Whose LP it is.** In the pool, the LP belongs to the manager. The manager's address has a `Lend` in every bucket where its positions hold LP, for all of them together. A `PositionLend` is one position's part of it.
+- **Memorialize, redeem, move.** `MemorializePosition` moves all of the owner's LP in the buckets named into the position. `RedeemPosition` returns all of the position's LP in the buckets named to the owner. `MoveLiquidity` moves the position's quote from one bucket to another.
+  - A memorialize lists every bucket passed to the call. A bucket where the owner held no LP is listed too, and changes nothing.
+  - A move takes only quote that is not lent out, so it can leave LP in the bucket it moves from.
+- **How LP is read.** None of these events says how much LP the position holds afterwards. Each `PositionLend` an event names is read from the manager, at most once per block, and removed when the position has no LP left in the bucket.
+- **Value.** `lpbValueInQuote` is `lpb` times the bucket's `exchangeRate` when the `PositionLend` was last refreshed, rounded down, and zero if the bucket held neither quote nor collateral. The bucket is refreshed more often than the `PositionLend`, so multiply `lpb` by `bucket.exchangeRate` for a newer value.
+- **Owner.** `Position.owner` follows the NFT's transfers. A mint and a burn emit an ERC721 `Transfer` as well; they are recorded as `Mint` and `Burn`, and a `Transfer` entity is always a transfer from one holder to another.
+- **Burn.** A burned position is removed. The events about it stay, and name it by `positionManager` and `tokenId`. `Burn.lender` is the address that burned it, which can be an address approved for it, and `Burn.owner` is its owner.
+- **Approvals.** `Approval` and `ApprovalForAll` are recorded as events only. Who may manage a position now is not stored, because a transfer or a burn clears a position's approved address without an event: read `getApproved` and `isApprovedForAll` from the manager.
+- **Token URI.** Not stored. The manager builds it on chain from the owner and the pool's token symbols: read `tokenURI` from the manager.
+
+The pool emits its own events in the same calls, with the manager as the lender (`TransferLP`, `MoveQuoteToken`, `IncreaseLPAllowance`). `Pool.txCount` counts those, and the position events count for the owner's `Account.txCount`.
+
 ### Retention
 
-A `Lend` is removed when the lender has no LP left in the bucket, and an `ExitQueuePlace` when its last LP is claimed. A `BorrowerDelegate`, `LPAllowance` or `LPTransferorList` is removed when it is revoked or used up. Pools, buckets, loans and surplus auctions are kept: a closed loan stays, with the bucket and expiry it had.
+A `Lend` is removed when the lender has no LP left in the bucket, and an `ExitQueuePlace` when its last LP is claimed. A `BorrowerDelegate`, `LPAllowance` or `LPTransferorList` is removed when it is revoked or used up. A `PositionLend` is removed when the position has no LP left in the bucket, and a `Position` when its NFT is burned. Pools, buckets, loans and surplus auctions are kept: a closed loan stays, with the bucket and expiry it had.
 
 ### Differences from the v2 schema
 
-This covers the entities written so far. Fields and entities that belong to the PositionManager handlers, which are not written yet, such as a bucket's `positionLends`, are absent for now and are not listed as removed.
+The v2 subgraph's Ajna token, grant fund and burn wrapper entities are not part of this subgraph.
 
 | Entity | Change |
 | ------ | ------ |
-| `PoolFactory` | Adds `loanTerm`. `pools` is derived. `poolType` and `txCount` are gone. |
+| `PoolFactory` | Adds `loanTerm` and the derived `positionManagers`. `pools` is derived. `poolType` and `txCount` are gone. |
 | `Pool` | Adds `factory`, `loanTerm`, `debt`, `rateAtTarget`, `utilization`, `escrowedQuote`, `availableQuote`, `lenderCollateral`, the six surplus fields, `interestUpdateFailures` and `updatedAt*`. `t0debt` now holds t0 debt (v2 stored the debt there). `loansCount` counts loans with debt. `reserveAuctions` is replaced by `surplusAuctions`, `quoteSurplusAuction` and `collateralSurplusAuction`. Prices (`hpb`, `htp`, `lup`), fees, reserves, burn epoch, bonds, liquidations, `totalInterestEarned`, `maxBorrower`, `minDebtAmount`, `actualUtilization`, `targetUtilization`, `poolType` and the ERC721 fields are gone. |
-| `Pool.txCount`, `Token.txCount`, `Account.txCount` | Count actions. `UpdateInterestRate`, `InterestUpdateFailure`, `LoanClosed`, `ImproveLoan` and `ExitQueueFunded` are emitted as part of another action and are not counted. An account's count covers its actions as a lender, kicker or taker, and every action on its loans, including a call or a move by someone else. |
+| `Pool.txCount`, `Token.txCount`, `Account.txCount` | Count actions. `UpdateInterestRate`, `InterestUpdateFailure`, `LoanClosed`, `ImproveLoan` and `ExitQueueFunded` are emitted as part of another action and are not counted. An account's count covers its actions as a lender, kicker or taker, and every action on its loans and positions, including a call, a move or a burn by someone else. Position events do not add to a pool's or a token's count: the pool's own events in the same call do. |
 | `Token` | `pools` is split into the derived `poolsAsCollateral` and `poolsAsQuote`. `tokenType` and `totalSupply` are gone. |
-| `Bucket` | `lends` is derived. Adds `t0debt`, `loans`, `queueHead`, `queueTail`, `escrowQuote`, `escrowCollateral`, `exitQueuePlaces` and `updatedAt*`. `deposit`, `collateral` and `lpb` exclude what the exit queue has moved to escrow. |
+| `Bucket` | `lends` and `positionLends` are derived. Adds `t0debt`, `loans`, `queueHead`, `queueTail`, `escrowQuote`, `escrowCollateral`, `exitQueuePlaces` and `updatedAt*`. `deposit`, `collateral` and `lpb` exclude what the exit queue has moved to escrow. |
 | `Lend` | Adds `account`, `marked`, `liveLpb`, `fundedValueInQuote` and `updatedAt*`. `lpbValueInQuote` includes LP the exit queue has funded. |
 | `ExitQueuePlace` | New. |
 | `Loan` | One per loan id, no longer one per borrower, and kept after it closes. The id is the pool address, `|`, and the loan id. Adds `loanId`, `counter`, `account`, `bucket`, `bucketIndex`, `status`, `t0Tp`, `inflatorAtDraw`, `expiry`, `movedFrom`, `movedTo`, `call` and the created, closed and updated blocks. `inLiquidation`, `liquidationAuction`, `t0Np` and `tokenIdsPledged` are gone. |
-| `Account` | `lends`, `loans` and `exitQueuePlaces` are derived. `pools` and the liquidation, reserve auction and grant fields are gone. |
+| `Account` | `lends`, `loans`, `exitQueuePlaces` and `positions` are derived. `pools` and the liquidation, reserve auction and grant fields are gone. |
 | `BorrowerDelegate` | New. |
 | `LPAllowanceList` | `allowances` is derived, and an empty list is kept. Ids are built from the raw address bytes. |
 | `LPAllowance` | Adds `allowanceList` and `amountWad`. An allowance for an index that is not a bucket, which the pool accepts, is not stored. |
@@ -155,6 +174,11 @@ This covers the entities written so far. Fields and entities that belong to the 
 | `InterestUpdateFailure` | New. |
 | `SurplusAuction` | Replaces `ReserveAuction`. One per kick, of either kind, identified by its kick time instead of a burn epoch. Has `kind`, `token`, `kicker`, `kickTime`, `lot`, `rolledOver`, `startingPrice`, `lotRemaining`, `lastTakePrice` and `ajnaBurned`; `takes` is derived. |
 | `SurplusAuctionKick`, `SurplusAuctionTake` | Replace `ReserveAuctionKick` and `ReserveAuctionTake`. Their ids are the transaction hash and log index, so several in one transaction no longer collide. The kicker and taker come from the event, not from the transaction's sender. |
+| `PositionManager` | New, one per manager, with its `factory` and `positionCount`. v2 kept a `Token` for its single manager. |
+| `Position` | The id is the manager's address, `|`, and the token id; v2 used the token id alone. Adds `positionManager`, `account` and the created block. `lends` is derived and replaces the `indexes` array. `token` and `tokenURI` are gone. |
+| `PositionLend` | The id is the position's id, `|`, and the bucket index. Adds `position`, `pool` and `updatedAt*`. `tokenId` is gone: use `position`. `lpbValueInQuote` is worked out from the bucket's exchange rate, not read from the pool. |
+| `Mint`, `Burn`, `MemorializePosition`, `RedeemPosition`, `MoveLiquidity`, `Approval`, `ApprovalForAll` | Add `positionManager`. `Burn` and `Approval` add `pool`, and `Burn` adds `owner`. `MoveLiquidity` adds `from`, `to`, `lpRedeemedFrom` and `lpAwardedTo`. `MemorializePosition.indexes` includes buckets where nothing was memorialized. |
+| `Transfer` | Adds `positionManager`. `token` is gone. Only transfers between holders are stored: v2 also stored the transfer of a mint and of a burn. |
 
 ## ABIs
 

@@ -49,10 +49,26 @@ dataSources:
       kind: ethereum/events
       apiVersion: 0.0.7
       language: wasm/assemblyscript
-      entities: []
+      entities:
+        - Account
+        - Approval
+        - ApprovalForAll
+        - Bucket
+        - Burn
+        - MemorializePosition
+        - Mint
+        - MoveLiquidity
+        - PoolFactory
+        - Position
+        - PositionLend
+        - PositionManager
+        - RedeemPosition
+        - Transfer
       abis:
         - name: PositionManager
           file: ./abis/PositionManager.json
+        - name: ERC20PoolFactory
+          file: ./abis/ERC20PoolFactory.json
         - name: ERC20Pool
           file: ./abis/ERC20Pool.json
         - name: PoolInfoUtils

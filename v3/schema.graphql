@@ -1,8 +1,5 @@
 # Ajna v3 subgraph schema.
 #
-# Entities are added together with the handlers that write them. The PositionManager is not
-# covered yet.
-#
 # Amounts, prices and rates are BigDecimal in whole units (the contracts' WAD values divided by
 # 1e18). Bucket indexes are Int. Counts, block numbers and timestamps are BigInt.
 #
@@ -10,10 +7,10 @@
 # reaches zero, it also stores the contract's exact integer value in a field ending in Wad, and
 # does its arithmetic on that.
 #
-# Pool, Bucket, Lend and Loan hold contract state as it was at the end of the block of the last
-# event that refreshed them, recorded in updatedAtBlockNumber. Interest accrues between events, so
-# a value can be older than the block being queried. Debts are stored in t0 terms, which do not
-# change as interest accrues: multiply by the pool's current inflator for the debt owed.
+# Pool, Bucket, Lend, Loan and PositionLend hold contract state as it was at the end of the block
+# of the last event that refreshed them, recorded in updatedAtBlockNumber. Interest accrues between
+# events, so a value can be older than the block being queried. Debts are stored in t0 terms, which
+# do not change as interest accrues: multiply by the pool's current inflator for the debt owed.
 
 type Token @entity {
   id: Bytes!                # token address
@@ -37,6 +34,8 @@ type PoolFactory @entity {
   loanTerm: BigInt!         # term of every loan in this factory's pools, in seconds
   poolCount: BigInt!        # number of pools deployed by the factory
   pools: [Pool!]! @derivedFrom(field: "factory")
+  # the factory's PositionManager, once it has emitted an event
+  positionManagers: [PositionManager!]! @derivedFrom(field: "factory")
 }
 
 type Pool @entity {
@@ -126,6 +125,7 @@ type Bucket @entity {
   t0debt: BigDecimal!
   lends: [Lend!]! @derivedFrom(field: "bucket")
   loans: [Loan!]! @derivedFrom(field: "bucket")
+  positionLends: [PositionLend!]! @derivedFrom(field: "bucket")
 
   # EXIT QUEUE
   # A lender who marks their LP for withdrawal takes a place on the bucket's exit queue. Quote and
@@ -240,7 +240,9 @@ type Account @entity {
   lends: [Lend!]! @derivedFrom(field: "account")
   loans: [Loan!]! @derivedFrom(field: "account")
   exitQueuePlaces: [ExitQueuePlace!]! @derivedFrom(field: "account")
-  # the account's actions as a lender, kicker or taker, and actions on its loans whoever performed them
+  positions: [Position!]! @derivedFrom(field: "account")
+  # the account's actions as a lender, kicker or taker, and actions on its loans and positions
+  # whoever performed them
   txCount: BigInt!
 }
 
@@ -305,6 +307,56 @@ type LPAllowance @entity {
   index: Int!               # bucket index
   amount: BigDecimal!       # LP the spender may receive from this bucket
   amountWad: BigInt!        # the same, as the contract's exact integer (1e18 per LP)
+}
+
+
+  # # # # # # # # # # # # # # #
+  # POSITION MANAGER ENTITIES #
+  # # # # # # # # # # # # # # #
+
+# Each pool factory has its own PositionManager, which issues NFTs that hold LP in that factory's
+# pools. The entity is created by the first event the manager emits.
+type PositionManager @entity {
+  id: Bytes!                # PositionManager address
+  factory: PoolFactory!     # factory whose pools its positions hold LP in
+  positionCount: BigInt!    # positions that exist: minted and not burned
+  positions: [Position!]! @derivedFrom(field: "positionManager")
+}
+
+# An NFT that holds LP in one pool for its owner. Removed when the NFT is burned.
+#
+# Each PositionManager numbers its tokens from 1, so a token id identifies a position only together
+# with the manager that issued it.
+#
+# In the pool, the LP belongs to the PositionManager: the manager's address has a Lend in every
+# bucket where its positions hold LP, for all of them together. A PositionLend is one position's
+# part of it.
+type Position @entity {
+  id: Bytes!                        # $positionManagerAddress + '|' + $tokenId
+  positionManager: PositionManager!
+  tokenId: BigInt!
+  pool: Pool!                       # the only pool the position can hold LP in
+  owner: Bytes!                     # address that owns the NFT
+  account: Account!                 # the owner, as an Account
+  lends: [PositionLend!]! @derivedFrom(field: "position")
+  createdAtBlockNumber: BigInt!
+  createdAtTimestamp: BigInt!
+}
+
+# The LP a position holds in one bucket. Removed when the position has no LP left there.
+type PositionLend @entity {
+  id: Bytes!                    # $positionId + '|' + $bucketIndex
+  position: Position!
+  pool: Pool!
+  bucket: Bucket!
+  bucketIndex: Int!
+  lpb: BigDecimal!              # LP the position holds in the bucket
+  # lpb at the bucket's exchange rate when the PositionLend was last refreshed. The bucket is
+  # refreshed more often: multiply lpb by its exchangeRate for a current value.
+  lpbValueInQuote: BigDecimal!
+  depositTime: BigInt!          # deposit time the manager records for the position's LP in the bucket
+  updatedAtBlockNumber: BigInt!
+  updatedAtTimestamp: BigInt!
 }
 
 
@@ -598,6 +650,123 @@ type UpdateInterestRate @entity(immutable: true) {
 type InterestUpdateFailure @entity(immutable: true) {
   id: Bytes!
   pool: Pool!
+  blockNumber: BigInt!
+  blockTimestamp: BigInt!
+  transactionHash: Bytes!
+}
+
+
+  # # # # # # # # # # # # # #
+  # POSITION MANAGER EVENTS #
+  # # # # # # # # # # # # # #
+
+# These name a position by its manager and token id rather than pointing at the Position, which is
+# removed when its NFT is burned.
+
+type Mint @entity(immutable: true) {
+  id: Bytes!                # transaction hash + log index
+  positionManager: PositionManager!
+  tokenId: BigInt!
+  pool: Pool!               # pool the position was minted for
+  lender: Bytes!            # address the NFT was minted to
+  blockNumber: BigInt!
+  blockTimestamp: BigInt!
+  transactionHash: Bytes!
+}
+
+type Burn @entity(immutable: true) {
+  id: Bytes!                # transaction hash + log index
+  positionManager: PositionManager!
+  tokenId: BigInt!
+  pool: Pool!
+  lender: Bytes!            # address that burned the NFT: its owner, or an address approved for it
+  owner: Bytes!             # owner of the NFT when it was burned
+  blockNumber: BigInt!
+  blockTimestamp: BigInt!
+  transactionHash: Bytes!
+}
+
+type MemorializePosition @entity(immutable: true) {
+  id: Bytes!                # transaction hash + log index
+  positionManager: PositionManager!
+  tokenId: BigInt!
+  pool: Pool!
+  lender: Bytes!            # owner of the NFT, whose LP moved into the position
+  # every bucket index passed to the call, including those where the owner held no LP and
+  # nothing was memorialized
+  indexes: [Int!]!
+  blockNumber: BigInt!
+  blockTimestamp: BigInt!
+  transactionHash: Bytes!
+}
+
+type RedeemPosition @entity(immutable: true) {
+  id: Bytes!                # transaction hash + log index
+  positionManager: PositionManager!
+  tokenId: BigInt!
+  pool: Pool!
+  lender: Bytes!            # owner of the NFT, who received the position's LP
+  indexes: [Int!]!          # bucket indexes whose LP left the position
+  blockNumber: BigInt!
+  blockTimestamp: BigInt!
+  transactionHash: Bytes!
+}
+
+# A move can leave LP behind in the bucket it moves from: only quote that is not lent out can move.
+type MoveLiquidity @entity(immutable: true) {
+  id: Bytes!                # transaction hash + log index
+  positionManager: PositionManager!
+  tokenId: BigInt!
+  pool: Pool!
+  lender: Bytes!            # owner of the NFT
+  from: Bucket!
+  to: Bucket!
+  fromIndex: Int!
+  toIndex: Int!
+  lpRedeemedFrom: BigDecimal!  # LP the position gave up in the bucket moved from
+  lpAwardedTo: BigDecimal!     # LP the position received in the bucket moved to
+  blockNumber: BigInt!
+  blockTimestamp: BigInt!
+  transactionHash: Bytes!
+}
+
+# A transfer of a position's NFT from one holder to another. A mint and a burn are recorded as
+# Mint and Burn only.
+type Transfer @entity(immutable: true) {
+  id: Bytes!                # transaction hash + log index
+  positionManager: PositionManager!
+  tokenId: BigInt!
+  pool: Pool!
+  from: Bytes!
+  to: Bytes!
+  blockNumber: BigInt!
+  blockTimestamp: BigInt!
+  transactionHash: Bytes!
+}
+
+# An approval of one address to manage a position (ERC721 approve, or the manager's permit).
+# approved is the zero address when the owner clears it. A transfer or a burn also clears it, and
+# emits no Approval.
+type Approval @entity(immutable: true) {
+  id: Bytes!                # transaction hash + log index
+  positionManager: PositionManager!
+  tokenId: BigInt!
+  pool: Pool!
+  owner: Bytes!
+  approved: Bytes!
+  blockNumber: BigInt!
+  blockTimestamp: BigInt!
+  transactionHash: Bytes!
+}
+
+# An owner allowing, or no longer allowing, an operator to manage all of their positions in one
+# PositionManager.
+type ApprovalForAll @entity(immutable: true) {
+  id: Bytes!                # transaction hash + log index
+  positionManager: PositionManager!
+  owner: Bytes!
+  operator: Bytes!
+  approved: Boolean!
   blockNumber: BigInt!
   blockTimestamp: BigInt!
   transactionHash: Bytes!

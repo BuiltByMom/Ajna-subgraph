@@ -1,6 +1,7 @@
 import { Address, BigInt, Bytes, ethereum } from "@graphprotocol/graph-ts"
 
 import { Bucket, Pool } from "../../../generated/schema"
+import { ERC20Pool } from "../../../generated/templates/ERC20Pool/ERC20Pool"
 import { PoolInfoUtils } from "../../../generated/templates/ERC20Pool/PoolInfoUtils"
 
 import { wadToDecimal } from "../convert"
@@ -17,10 +18,12 @@ export function updateBucket(pool: Pool, index: i32, block: ethereum.Block): Buc
   let bucket = Bucket.load(bucketId)
   if (bucket != null && bucket.updatedAtBlockNumber.equals(block.number)) return bucket
 
+  const poolAddress = Address.fromBytes(pool.id)
   const bucketInfo = PoolInfoUtils.bind(poolDeployment(pool).poolInfoUtils).bucketInfo(
-    Address.fromBytes(pool.id),
+    poolAddress,
     BigInt.fromI32(index)
   )
+  const t0Debt = ERC20Pool.bind(poolAddress).bucketT0Debt(BigInt.fromI32(index))
 
   if (bucket == null) {
     bucket = new Bucket(bucketId)
@@ -33,6 +36,7 @@ export function updateBucket(pool: Pool, index: i32, block: ethereum.Block): Buc
   bucket.collateral = wadToDecimal(bucketInfo.getCollateral_())
   bucket.lpb = wadToDecimal(bucketInfo.getBucketLP_())
   bucket.exchangeRate = wadToDecimal(bucketInfo.getExchangeRate_())
+  bucket.t0debt = wadToDecimal(t0Debt)
   bucket.updatedAtBlockNumber = block.number
   bucket.updatedAtTimestamp = block.timestamp
   bucket.save()

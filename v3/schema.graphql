@@ -1,14 +1,15 @@
 # Ajna v3 subgraph schema.
 #
-# Entities are added together with the handlers that write them. Loans, the lender exit queue,
-# surplus auctions and the PositionManager are not covered yet.
+# Entities are added together with the handlers that write them. The lender exit queue, surplus
+# auctions and the PositionManager are not covered yet.
 #
 # Amounts, prices and rates are BigDecimal in whole units (the contracts' WAD values divided by
 # 1e18). Bucket indexes are Int. Counts, block numbers and timestamps are BigInt.
 #
-# Pool, Bucket and Lend hold contract state as it was at the end of the block of the last event
-# that refreshed them, recorded in updatedAtBlockNumber. Interest accrues between events, so a
-# value can be older than the block being queried.
+# Pool, Bucket, Lend and Loan hold contract state as it was at the end of the block of the last
+# event that refreshed them, recorded in updatedAtBlockNumber. Interest accrues between events, so
+# a value can be older than the block being queried. Debts are stored in t0 terms, which do not
+# change as interest accrues: multiply by the pool's current inflator for the debt owed.
 
 type Token @entity {
   id: Bytes!                # token address
@@ -48,7 +49,9 @@ type Pool @entity {
   # DEPOSITS AND DEBT
   poolSize: BigDecimal!              # quote deposited in buckets, excluding quote escrowed for marked lenders
   debt: BigDecimal!                  # debt owed by borrowers, at the pending inflator
+  t0debt: BigDecimal!                # debt in t0 terms: multiply by the inflator for the debt owed
   inflator: BigDecimal!              # pending inflator
+  loansCount: BigInt!                # number of loans that have debt
 
   # RATES
   borrowRate: BigDecimal!            # annual interest rate paid by borrowers
@@ -63,6 +66,12 @@ type Pool @entity {
   collateralBalance: BigDecimal!     # collateral token held by the pool contract
   escrowedQuote: BigDecimal!         # quote escrowed for marked lenders, not yet claimed
   availableQuote: BigDecimal!        # quote balance not owed to marked lenders or the surplus auction
+
+  # COLLATERAL OWED
+  # The pool changes these two by exactly the amounts in its events, so they are added up from
+  # the events rather than read.
+  pledgedCollateral: BigDecimal!     # collateral held on loans, owed to borrowers
+  lenderCollateral: BigDecimal!      # collateral held in buckets and exit escrow, owed to lenders
 
   # SURPLUS
   quoteSurplus: BigDecimal!                  # excess quote not yet in an auction lot
@@ -81,8 +90,10 @@ type Pool @entity {
   interestUpdateFailures: BigInt!
 
   buckets: [Bucket!]! @derivedFrom(field: "pool")
+  loans: [Loan!]! @derivedFrom(field: "pool")
 
-  # block at which the fields above, other than the counters and flashloan totals, were read
+  # block at which the fields read from the contracts were read: deposits and debt other than
+  # loansCount, rates, token balances and surplus
   updatedAtBlockNumber: BigInt!
   updatedAtTimestamp: BigInt!
 }
@@ -97,7 +108,11 @@ type Bucket @entity {
   collateral: BigDecimal!    # collateral in the bucket available to its LP holders
   lpb: BigDecimal!           # LP outstanding in the bucket; LP the exit queue has funded has left it
   exchangeRate: BigDecimal!  # quote value of one LP
+  # Debt drawn from the bucket, in t0 terms. Each loan borrows from one bucket, and a bucket's
+  # lenders earn interest only on the debt drawn from it.
+  t0debt: BigDecimal!
   lends: [Lend!]! @derivedFrom(field: "bucket")
+  loans: [Loan!]! @derivedFrom(field: "bucket")
   updatedAtBlockNumber: BigInt!
   updatedAtTimestamp: BigInt!
 }
@@ -120,10 +135,64 @@ type Lend @entity {
   updatedAtTimestamp: BigInt!
 }
 
+enum LoanStatus {
+  Active    # has debt
+  DebtFree  # has no debt and still holds collateral, which its borrower can pull or borrow against
+  Closed    # has neither debt nor collateral; the pool no longer accepts its id
+}
+
+# A borrower can hold any number of loans in a pool. Each is drawn from a single bucket and has
+# its own collateral, debt and expiry. A loan never takes on more debt and never changes bucket:
+# moving or improving a loan opens a new one. Loans are kept after they close.
+#
+# A loan with debt can be called by anyone once the block timestamp is past its expiry, or while
+# its collateral at the bucket price is worth less than 1.05 times its debt.
+type Loan @entity {
+  id: Bytes!                    # $poolAddress + '|' + $loanId
+  pool: Pool!
+  poolAddress: String!
+  loanId: Bytes!                # the pool's id for the loan: the borrower's address followed by counter
+  counter: BigInt!              # the pool numbers its loans from 1, in the order they are opened
+  borrower: Bytes!              # address of the borrower
+  account: Account!             # the same borrower, as an Account
+  bucket: Bucket!               # bucket the loan is drawn from
+  bucketIndex: Int!
+  status: LoanStatus!
+  collateralPledged: BigDecimal!
+  t0debt: BigDecimal!           # debt in t0 terms: multiply by the pool's inflator for the debt owed
+  t0Tp: BigDecimal!             # threshold price in t0 terms: 1.05 * t0debt / collateralPledged
+  # t0Tp at the pool's inflator when the loan was last refreshed. It rounds differently from the
+  # pool's own check, so do not decide whether a loan can be called by comparing it with the
+  # bucket price.
+  thresholdPrice: BigDecimal!
+  inflatorAtDraw: BigDecimal!   # pool inflator when the loan was opened
+  expiry: BigInt!               # timestamp after which the loan can be called whatever its collateral
+  movedFrom: Loan               # loan whose debt was moved to open this one, if it was opened by a move
+  movedTo: [Loan!]! @derivedFrom(field: "movedFrom")
+  call: LoanCalled              # set if the loan was called
+  createdAtBlockNumber: BigInt!
+  createdAtTimestamp: BigInt!
+  closedAtBlockNumber: BigInt   # set once the status is Closed
+  closedAtTimestamp: BigInt
+  updatedAtBlockNumber: BigInt!
+  updatedAtTimestamp: BigInt!
+}
+
 type Account @entity {
   id: Bytes!                # account address
   lends: [Lend!]! @derivedFrom(field: "account")
-  txCount: BigInt!          # lender actions performed by the account
+  loans: [Loan!]! @derivedFrom(field: "account")
+  # the account's lender actions, and actions on its loans whoever performed them
+  txCount: BigInt!
+}
+
+# An address a borrower has approved to borrow, pull collateral and move loans on their behalf
+# in a pool. Removed when the approval is revoked.
+type BorrowerDelegate @entity {
+  id: Bytes!                # $poolAddress + '|' + $borrower + '|' + $delegate
+  pool: Pool!
+  borrower: Bytes!
+  delegate: Bytes!
 }
 
 # LP transferors a lender has approved in a pool. Removed when none are left.
@@ -245,6 +314,102 @@ type TransferLP @entity(immutable: true) {
   newOwner: Bytes!          # lender the LP was transferred to
   indexes: [Int!]!          # every bucket index named in the call, with or without LP to transfer
   lp: BigDecimal!           # total LP transferred across those buckets
+  blockNumber: BigInt!
+  blockTimestamp: BigInt!
+  transactionHash: Bytes!
+}
+
+# Debt was drawn into a new loan, or collateral was pledged to an existing one.
+type DrawDebt @entity(immutable: true) {
+  id: Bytes!
+  pool: Pool!
+  loan: Loan!
+  bucket: Bucket!
+  borrower: Bytes!
+  amountBorrowed: BigDecimal!     # zero when collateral was pledged to an existing loan
+  collateralPledged: BigDecimal!  # collateral transferred in; a new loan can also take over a closed loan's
+  blockNumber: BigInt!
+  blockTimestamp: BigInt!
+  transactionHash: Bytes!
+}
+
+type RepayDebt @entity(immutable: true) {
+  id: Bytes!
+  pool: Pool!
+  loan: Loan!
+  bucket: Bucket!
+  borrower: Bytes!
+  quoteRepaid: BigDecimal!
+  collateralPulled: BigDecimal!
+  blockNumber: BigInt!
+  blockTimestamp: BigInt!
+  transactionHash: Bytes!
+}
+
+# Debt, with collateral, moved out of a loan into a new loan in another bucket, or collateral
+# alone moved into another of the borrower's loans. Emitted by moveLoan and by improveLoan.
+type MoveLoan @entity(immutable: true) {
+  id: Bytes!
+  pool: Pool!
+  borrower: Bytes!
+  fromLoan: Loan!
+  toLoan: Loan!
+  fromBucket: Bucket!
+  toBucket: Bucket!
+  debtMoved: BigDecimal!
+  collateralMoved: BigDecimal!
+  blockNumber: BigInt!
+  blockTimestamp: BigInt!
+  transactionHash: Bytes!
+}
+
+# Anyone moved a whole loan into a bucket with a higher price. Follows the MoveLoan of the same call.
+type ImproveLoan @entity(immutable: true) {
+  id: Bytes!
+  pool: Pool!
+  caller: Bytes!
+  fromLoan: Loan!
+  toLoan: Loan!
+  blockNumber: BigInt!
+  blockTimestamp: BigInt!
+  transactionHash: Bytes!
+}
+
+# An action cleared a loan's debt or deleted the loan.
+type LoanClosed @entity(immutable: true) {
+  id: Bytes!
+  pool: Pool!
+  loan: Loan!
+  borrower: Bytes!
+  deleted: Boolean!               # false if the debt was cleared and the loan still held collateral
+  blockNumber: BigInt!
+  blockTimestamp: BigInt!
+  transactionHash: Bytes!
+}
+
+# An expired or under-collateralized loan was settled in collateral.
+type LoanCalled @entity(immutable: true) {
+  id: Bytes!
+  pool: Pool!
+  loan: Loan!
+  bucket: Bucket!
+  borrower: Bytes!
+  caller: Bytes!
+  debt: BigDecimal!               # debt of the loan when it was called
+  lenderCollateral: BigDecimal!   # collateral given to the loan's bucket
+  callerCollateral: BigDecimal!   # collateral paid to the caller
+  surplusCollateral: BigDecimal!  # collateral left in the pool as surplus
+  blockNumber: BigInt!
+  blockTimestamp: BigInt!
+  transactionHash: Bytes!
+}
+
+type SetBorrowerDelegates @entity(immutable: true) {
+  id: Bytes!
+  pool: Pool!
+  borrower: Bytes!
+  delegates: [Bytes!]!
+  approved: Boolean!              # true if the delegates were approved, false if they were revoked
   blockNumber: BigInt!
   blockTimestamp: BigInt!
   transactionHash: Bytes!

@@ -1,6 +1,7 @@
 import { Address, ethereum, log } from "@graphprotocol/graph-ts"
 
 import { Pool } from "../../../generated/schema"
+import { ERC20Pool } from "../../../generated/templates/ERC20Pool/ERC20Pool"
 import { PoolInfoUtilsMulticall } from "../../../generated/templates/ERC20Pool/PoolInfoUtilsMulticall"
 
 import { LENDER_INTEREST_SHARE_BI, ONE_BI, ZERO_BD, ZERO_BI } from "../constants"
@@ -17,7 +18,9 @@ export function createPool(poolAddress: Address): Pool {
 
   pool.poolSize = ZERO_BD
   pool.debt = ZERO_BD
+  pool.t0debt = ZERO_BD
   pool.inflator = ZERO_BD
+  pool.loansCount = ZERO_BI
 
   pool.borrowRate = ZERO_BD
   pool.rateAtTarget = ZERO_BD
@@ -28,6 +31,8 @@ export function createPool(poolAddress: Address): Pool {
   pool.collateralBalance = ZERO_BD
   pool.escrowedQuote = ZERO_BD
   pool.availableQuote = ZERO_BD
+  pool.pledgedCollateral = ZERO_BD
+  pool.lenderCollateral = ZERO_BD
 
   pool.quoteSurplus = ZERO_BD
   pool.quoteSurplusClaimable = ZERO_BD
@@ -62,7 +67,7 @@ function logUnreadable(pool: Pool, block: ethereum.Block): void {
   ])
 }
 
-// Refreshes the pool from chain. The caller saves it.
+// Refreshes the fields of the pool that are read from chain. The caller saves it.
 //
 // A contract call made while handling an event reads state as of the end of that event's block,
 // so every event of a block sees the same values and one read per block is enough.
@@ -112,6 +117,9 @@ export function updatePool(pool: Pool, block: ethereum.Block): void {
   pool.collateralBalance = wadToDecimal(balances.collateralTokenBalance)
   pool.escrowedQuote = wadToDecimal(balances.escrowedQuote)
   pool.availableQuote = wadToDecimal(balances.availableQuote)
+
+  // the readers give debt at the pending inflator only; t0 debt is a stored value that cannot revert
+  pool.t0debt = wadToDecimal(ERC20Pool.bind(poolAddress).totalT0Debt())
 
   pool.updatedAtBlockNumber = block.number
   pool.updatedAtTimestamp = block.timestamp

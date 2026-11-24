@@ -1,19 +1,26 @@
 import { newMockEvent } from "matchstick-as"
-import { Address, BigInt, ethereum } from "@graphprotocol/graph-ts"
+import { Address, BigInt, Bytes, ethereum } from "@graphprotocol/graph-ts"
 
 import {
   AddCollateral,
   AddQuoteToken,
   ApproveLPTransferors,
   DecreaseLPAllowance,
+  DrawDebt,
   Flashloan,
+  ImproveLoan,
   IncreaseLPAllowance,
   InterestUpdateFailure,
+  LoanCalled,
+  LoanClosed,
+  MoveLoan,
   MoveQuoteToken,
   RemoveCollateral,
   RemoveQuoteToken,
+  RepayDebt,
   RevokeLPAllowance,
   RevokeLPTransferors,
+  SetBorrowerDelegates,
   TransferLP,
   UpdateInterestRate
 } from "../../generated/templates/ERC20Pool/ERC20Pool"
@@ -28,6 +35,10 @@ function addressParam(name: string, value: Address): ethereum.EventParam {
 
 function uintParam(name: string, value: BigInt): ethereum.EventParam {
   return new ethereum.EventParam(name, ethereum.Value.fromUnsignedBigInt(value))
+}
+
+function loanIdParam(name: string, loanId: Bytes): ethereum.EventParam {
+  return new ethereum.EventParam(name, ethereum.Value.fromFixedBytes(loanId))
 }
 
 function indexParam(name: string, index: i32): ethereum.EventParam {
@@ -284,5 +295,153 @@ export function createInterestUpdateFailureEvent(pool: Address, blockNumber: i32
   const event = changetype<InterestUpdateFailure>(newMockEvent())
   placeEvent(event, pool, blockNumber, logIndex)
   event.parameters = []
+  return event
+}
+
+export function createDrawDebtEvent(
+  pool: Address,
+  blockNumber: i32,
+  logIndex: i32,
+  borrower: Address,
+  loanId: Bytes,
+  bucketIndex: i32,
+  amountBorrowed: BigInt,
+  collateralPledged: BigInt
+): DrawDebt {
+  const event = changetype<DrawDebt>(newMockEvent())
+  placeEvent(event, pool, blockNumber, logIndex)
+  event.parameters = [
+    addressParam("borrower", borrower),
+    loanIdParam("loanId", loanId),
+    indexParam("bucketIndex", bucketIndex),
+    uintParam("amountBorrowed", amountBorrowed),
+    uintParam("collateralPledged", collateralPledged)
+  ]
+  return event
+}
+
+export function createRepayDebtEvent(
+  pool: Address,
+  blockNumber: i32,
+  logIndex: i32,
+  borrower: Address,
+  loanId: Bytes,
+  bucketIndex: i32,
+  quoteRepaid: BigInt,
+  collateralPulled: BigInt
+): RepayDebt {
+  const event = changetype<RepayDebt>(newMockEvent())
+  placeEvent(event, pool, blockNumber, logIndex)
+  event.parameters = [
+    addressParam("borrower", borrower),
+    loanIdParam("loanId", loanId),
+    indexParam("bucketIndex", bucketIndex),
+    uintParam("quoteRepaid", quoteRepaid),
+    uintParam("collateralPulled", collateralPulled)
+  ]
+  return event
+}
+
+export function createMoveLoanEvent(
+  pool: Address,
+  blockNumber: i32,
+  logIndex: i32,
+  borrower: Address,
+  fromLoanId: Bytes,
+  toLoanId: Bytes,
+  fromBucketIndex: i32,
+  toBucketIndex: i32,
+  debtMoved: BigInt,
+  collateralMoved: BigInt
+): MoveLoan {
+  const event = changetype<MoveLoan>(newMockEvent())
+  placeEvent(event, pool, blockNumber, logIndex)
+  event.parameters = [
+    addressParam("borrower", borrower),
+    loanIdParam("fromLoanId", fromLoanId),
+    loanIdParam("toLoanId", toLoanId),
+    indexParam("fromBucketIndex", fromBucketIndex),
+    indexParam("toBucketIndex", toBucketIndex),
+    uintParam("debtMoved", debtMoved),
+    uintParam("collateralMoved", collateralMoved)
+  ]
+  return event
+}
+
+export function createImproveLoanEvent(
+  pool: Address,
+  blockNumber: i32,
+  logIndex: i32,
+  caller: Address,
+  fromLoanId: Bytes,
+  toLoanId: Bytes
+): ImproveLoan {
+  const event = changetype<ImproveLoan>(newMockEvent())
+  placeEvent(event, pool, blockNumber, logIndex)
+  event.parameters = [
+    addressParam("caller", caller),
+    loanIdParam("fromLoanId", fromLoanId),
+    loanIdParam("toLoanId", toLoanId)
+  ]
+  return event
+}
+
+export function createLoanClosedEvent(
+  pool: Address,
+  blockNumber: i32,
+  logIndex: i32,
+  borrower: Address,
+  loanId: Bytes,
+  deleted: boolean
+): LoanClosed {
+  const event = changetype<LoanClosed>(newMockEvent())
+  placeEvent(event, pool, blockNumber, logIndex)
+  event.parameters = [
+    addressParam("borrower", borrower),
+    loanIdParam("loanId", loanId),
+    new ethereum.EventParam("deleted", ethereum.Value.fromBoolean(deleted))
+  ]
+  return event
+}
+
+export function createLoanCalledEvent(
+  pool: Address,
+  blockNumber: i32,
+  logIndex: i32,
+  loanId: Bytes,
+  caller: Address,
+  debt: BigInt,
+  lenderCollateral: BigInt,
+  callerCollateral: BigInt,
+  surplusCollateral: BigInt
+): LoanCalled {
+  const event = changetype<LoanCalled>(newMockEvent())
+  placeEvent(event, pool, blockNumber, logIndex)
+  event.parameters = [
+    loanIdParam("loanId", loanId),
+    addressParam("caller", caller),
+    uintParam("debt", debt),
+    uintParam("lenderCollateral", lenderCollateral),
+    uintParam("callerCollateral", callerCollateral),
+    uintParam("surplusCollateral", surplusCollateral)
+  ]
+  return event
+}
+
+export function createSetBorrowerDelegatesEvent(
+  pool: Address,
+  blockNumber: i32,
+  logIndex: i32,
+  borrower: Address,
+  delegates: Address[],
+  approved: boolean
+): SetBorrowerDelegates {
+  const event = changetype<SetBorrowerDelegates>(newMockEvent())
+  placeEvent(event, pool, blockNumber, logIndex)
+  event.parameters = [
+    addressParam("borrower", borrower),
+    new ethereum.EventParam("delegates", ethereum.Value.fromAddressArray(delegates)),
+    new ethereum.EventParam("approved", ethereum.Value.fromBoolean(approved))
+  ]
   return event
 }

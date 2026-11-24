@@ -1,15 +1,23 @@
-import { Address, ethereum, log } from "@graphprotocol/graph-ts"
+import { Address, Bytes, ethereum, log } from "@graphprotocol/graph-ts"
 
 import {
   AddCollateral,
   AddQuoteToken,
   Bucket,
+  DrawDebt,
   Flashloan,
+  ImproveLoan,
   InterestUpdateFailure,
+  Loan,
+  LoanCalled,
+  LoanClosed,
+  MoveLoan,
   MoveQuoteToken,
   Pool,
   RemoveCollateral,
   RemoveQuoteToken,
+  RepayDebt,
+  SetBorrowerDelegates,
   Token,
   TransferLP,
   UpdateInterestRate
@@ -47,16 +55,21 @@ import {
 import { incrementAccountTxCount } from "../utils/account"
 import { ONE_BI } from "../utils/constants"
 import { bigIntArrayToIntArray, eventId, tokenAmountToDecimal, wadToDecimal } from "../utils/convert"
+import { setBorrowerDelegates } from "../utils/pool/borrower-delegates"
 import { updateBucket } from "../utils/pool/bucket"
 import { updateLend } from "../utils/pool/lend"
+import { createLoan, getLoanEntityId, loadLoan, refreshLoan } from "../utils/pool/loan"
 import { clearAllowances, decreaseAllowances, increaseAllowances } from "../utils/pool/lp-allowances"
 import { approveTransferors, revokeTransferors } from "../utils/pool/lp-transferors"
 import { countPoolAction, loadPool, updatePool } from "../utils/pool/pool"
 
-// Pool, Bucket and Lend are set from contract reads rather than from event amounts. A read made
-// while handling an event returns state as of the end of that event's block, so these entities
-// always hold end-of-block state, and events that share a block all write the same values. The
-// entity that records each event keeps that event's own amounts.
+// Pool, Bucket, Lend and Loan are set from contract reads rather than from event amounts. A read
+// made while handling an event returns state as of the end of that event's block, so these
+// entities always hold end-of-block state, and events that share a block all write the same
+// values. The entity that records each event keeps that event's own amounts.
+//
+// The exceptions are the pool's counters and totals that the contract changes by exactly an
+// event's amount: those are added up from the events.
 
 /*****************************/
 /*** Lender Event Handlers ***/
@@ -80,6 +93,7 @@ function refreshLend(event: ethereum.Event, pool: Pool, index: i32, lender: Addr
 export function handleAddCollateral(event: AddCollateralEvent): void {
   const pool = loadPool(event.address)
   const index = event.params.index.toI32()
+  pool.lenderCollateral = pool.lenderCollateral.plus(wadToDecimal(event.params.amount))
   recordLenderAction(event, pool, event.params.actor)
   const bucket = refreshLend(event, pool, index, event.params.actor)
 
@@ -143,6 +157,7 @@ export function handleMoveQuoteToken(event: MoveQuoteTokenEvent): void {
 export function handleRemoveCollateral(event: RemoveCollateralEvent): void {
   const pool = loadPool(event.address)
   const index = event.params.index.toI32()
+  pool.lenderCollateral = pool.lenderCollateral.minus(wadToDecimal(event.params.amount))
   recordLenderAction(event, pool, event.params.claimer)
   const bucket = refreshLend(event, pool, index, event.params.claimer)
 
@@ -267,21 +282,222 @@ export function handleTransferLP(event: TransferLPEvent): void {
 /*** Borrower Event Handlers ***/
 /*******************************/
 
-// Not implemented yet: loans.
+// A loan event names its loan by the pool's loan id. A borrower can hold several loans, each in
+// one bucket, and one call can touch two of them and emit several events:
+//
+//   repayDebt    ExitQueueFunded*, LoanClosed*, RepayDebt
+//   drawDebt     LoanClosed (when it replaces a debt-free loan), DrawDebt
+//   moveLoan     ExitQueueFunded*, MoveLoan, LoanClosed*
+//   improveLoan  ExitQueueFunded*, MoveLoan, LoanClosed, ImproveLoan
+//   callLoan     LoanClosed, ExitQueueFunded*, LoanCalled
+//
+// (* when it applies.) Each handler refreshes what its own event names, so no handler depends
+// on another having run first, except that a loan must have been introduced by an earlier
+// DrawDebt or MoveLoan.
 
-export function handleDrawDebt(event: DrawDebtEvent): void {}
+// Counts an action on a borrower's loans and refreshes the pool. The caller saves the pool once
+// it has refreshed the loans, because that can change the pool's count of loans with debt.
+function beginLoanAction(event: ethereum.Event, pool: Pool, borrower: Address): void {
+  countPoolAction(pool)
+  updatePool(pool, event.block)
+  incrementAccountTxCount(borrower)
+}
 
-export function handleRepayDebt(event: RepayDebtEvent): void {}
+// Opens a loan (amountBorrowed is not zero), or pledges collateral to an existing one.
+export function handleDrawDebt(event: DrawDebtEvent): void {
+  const pool = loadPool(event.address)
+  beginLoanAction(event, pool, event.params.borrower)
+  pool.pledgedCollateral = pool.pledgedCollateral.plus(wadToDecimal(event.params.collateralPledged))
 
-export function handleMoveLoan(event: MoveLoanEvent): void {}
+  const bucket = updateBucket(pool, event.params.bucketIndex.toI32(), event.block)
+  let loan = Loan.load(getLoanEntityId(pool.id, event.params.loanId))
+  if (loan == null) {
+    loan = createLoan(pool, event.params.loanId, bucket, event.block)
+  }
+  refreshLoan(pool, loan, event.block)
+  loan.save()
+  pool.save()
 
-export function handleImproveLoan(event: ImproveLoanEvent): void {}
+  const drawDebt = new DrawDebt(eventId(event))
+  drawDebt.pool = pool.id
+  drawDebt.loan = loan.id
+  drawDebt.bucket = bucket.id
+  drawDebt.borrower = event.params.borrower
+  drawDebt.amountBorrowed = wadToDecimal(event.params.amountBorrowed)
+  drawDebt.collateralPledged = wadToDecimal(event.params.collateralPledged)
 
-export function handleLoanClosed(event: LoanClosedEvent): void {}
+  drawDebt.blockNumber = event.block.number
+  drawDebt.blockTimestamp = event.block.timestamp
+  drawDebt.transactionHash = event.transaction.hash
+  drawDebt.save()
+}
 
-export function handleLoanCalled(event: LoanCalledEvent): void {}
+export function handleRepayDebt(event: RepayDebtEvent): void {
+  const pool = loadPool(event.address)
+  beginLoanAction(event, pool, event.params.borrower)
+  pool.pledgedCollateral = pool.pledgedCollateral.minus(wadToDecimal(event.params.collateralPulled))
 
-export function handleSetBorrowerDelegates(event: SetBorrowerDelegatesEvent): void {}
+  const bucket = updateBucket(pool, event.params.bucketIndex.toI32(), event.block)
+  const loan = loadLoan(pool, event.params.loanId)
+  refreshLoan(pool, loan, event.block)
+  loan.save()
+  pool.save()
+
+  const repayDebt = new RepayDebt(eventId(event))
+  repayDebt.pool = pool.id
+  repayDebt.loan = loan.id
+  repayDebt.bucket = bucket.id
+  repayDebt.borrower = event.params.borrower
+  repayDebt.quoteRepaid = wadToDecimal(event.params.quoteRepaid)
+  repayDebt.collateralPulled = wadToDecimal(event.params.collateralPulled)
+
+  repayDebt.blockNumber = event.block.number
+  repayDebt.blockTimestamp = event.block.timestamp
+  repayDebt.transactionHash = event.transaction.hash
+  repayDebt.save()
+}
+
+// Debt only ever moves into a loan opened by the move, in another bucket; collateral alone can
+// move into a loan the borrower already has. The pool's debt and pledged collateral do not change.
+export function handleMoveLoan(event: MoveLoanEvent): void {
+  const pool = loadPool(event.address)
+  beginLoanAction(event, pool, event.params.borrower)
+
+  const fromBucket = updateBucket(pool, event.params.fromBucketIndex.toI32(), event.block)
+  const toBucket = updateBucket(pool, event.params.toBucketIndex.toI32(), event.block)
+
+  const fromLoan = loadLoan(pool, event.params.fromLoanId)
+  let toLoan = Loan.load(getLoanEntityId(pool.id, event.params.toLoanId))
+  if (toLoan == null) {
+    toLoan = createLoan(pool, event.params.toLoanId, toBucket, event.block)
+    toLoan.movedFrom = fromLoan.id
+  }
+  refreshLoan(pool, fromLoan, event.block)
+  fromLoan.save()
+  refreshLoan(pool, toLoan, event.block)
+  toLoan.save()
+  pool.save()
+
+  const moveLoan = new MoveLoan(eventId(event))
+  moveLoan.pool = pool.id
+  moveLoan.borrower = event.params.borrower
+  moveLoan.fromLoan = fromLoan.id
+  moveLoan.toLoan = toLoan.id
+  moveLoan.fromBucket = fromBucket.id
+  moveLoan.toBucket = toBucket.id
+  moveLoan.debtMoved = wadToDecimal(event.params.debtMoved)
+  moveLoan.collateralMoved = wadToDecimal(event.params.collateralMoved)
+
+  moveLoan.blockNumber = event.block.number
+  moveLoan.blockTimestamp = event.block.timestamp
+  moveLoan.transactionHash = event.transaction.hash
+  moveLoan.save()
+}
+
+// Follows the MoveLoan and LoanClosed of the same call, which have already updated both loans,
+// so this only records who made the move. It is not counted as an action of its own.
+export function handleImproveLoan(event: ImproveLoanEvent): void {
+  const pool = loadPool(event.address)
+  const fromLoan = loadLoan(pool, event.params.fromLoanId)
+  const toLoan = loadLoan(pool, event.params.toLoanId)
+
+  const improveLoan = new ImproveLoan(eventId(event))
+  improveLoan.pool = pool.id
+  improveLoan.caller = event.params.caller
+  improveLoan.fromLoan = fromLoan.id
+  improveLoan.toLoan = toLoan.id
+
+  improveLoan.blockNumber = event.block.number
+  improveLoan.blockTimestamp = event.block.timestamp
+  improveLoan.transactionHash = event.transaction.hash
+  improveLoan.save()
+}
+
+// Emitted within the action that cleared the loan's debt or deleted it, so it is not counted as
+// an action of its own. It can come before that action's own event.
+export function handleLoanClosed(event: LoanClosedEvent): void {
+  const pool = loadPool(event.address)
+  updatePool(pool, event.block)
+  const loan = loadLoan(pool, event.params.loanId)
+  refreshLoan(pool, loan, event.block)
+  loan.save()
+  pool.save()
+
+  const loanClosed = new LoanClosed(eventId(event))
+  loanClosed.pool = pool.id
+  loanClosed.loan = loan.id
+  loanClosed.borrower = event.params.borrower
+  loanClosed.deleted = event.params.deleted
+
+  loanClosed.blockNumber = event.block.number
+  loanClosed.blockTimestamp = event.block.timestamp
+  loanClosed.transactionHash = event.transaction.hash
+  loanClosed.save()
+}
+
+// The event names neither the borrower nor the bucket; both come from the Loan.
+export function handleLoanCalled(event: LoanCalledEvent): void {
+  const pool = loadPool(event.address)
+  const loan = loadLoan(pool, event.params.loanId)
+  beginLoanAction(event, pool, Address.fromBytes(loan.borrower))
+
+  // The lenders', caller's and surplus shares all leave the loan. The lenders' share goes to
+  // the loan's bucket; the borrower's remainder, if any, stays on the loan.
+  const lenderCollateral = wadToDecimal(event.params.lenderCollateral)
+  const callerCollateral = wadToDecimal(event.params.callerCollateral)
+  const surplusCollateral = wadToDecimal(event.params.surplusCollateral)
+  pool.pledgedCollateral = pool.pledgedCollateral
+    .minus(lenderCollateral)
+    .minus(callerCollateral)
+    .minus(surplusCollateral)
+  pool.lenderCollateral = pool.lenderCollateral.plus(lenderCollateral)
+
+  const bucket = updateBucket(pool, loan.bucketIndex, event.block)
+  refreshLoan(pool, loan, event.block)
+  loan.call = eventId(event)
+  loan.save()
+  pool.save()
+
+  const loanCalled = new LoanCalled(eventId(event))
+  loanCalled.pool = pool.id
+  loanCalled.loan = loan.id
+  loanCalled.bucket = bucket.id
+  loanCalled.borrower = loan.borrower
+  loanCalled.caller = event.params.caller
+  loanCalled.debt = wadToDecimal(event.params.debt)
+  loanCalled.lenderCollateral = lenderCollateral
+  loanCalled.callerCollateral = callerCollateral
+  loanCalled.surplusCollateral = surplusCollateral
+
+  loanCalled.blockNumber = event.block.number
+  loanCalled.blockTimestamp = event.block.timestamp
+  loanCalled.transactionHash = event.transaction.hash
+  loanCalled.save()
+}
+
+export function handleSetBorrowerDelegates(event: SetBorrowerDelegatesEvent): void {
+  const pool = loadPool(event.address)
+  countPoolAction(pool)
+  pool.save()
+  incrementAccountTxCount(event.params.borrower)
+
+  setBorrowerDelegates(pool.id, event.params.borrower, event.params.delegates, event.params.approved)
+
+  const delegates: Bytes[] = []
+  for (let i = 0; i < event.params.delegates.length; i++) {
+    delegates.push(event.params.delegates[i])
+  }
+  const setDelegates = new SetBorrowerDelegates(eventId(event))
+  setDelegates.pool = pool.id
+  setDelegates.borrower = event.params.borrower
+  setDelegates.delegates = delegates
+  setDelegates.approved = event.params.approved
+
+  setDelegates.blockNumber = event.block.number
+  setDelegates.blockTimestamp = event.block.timestamp
+  setDelegates.transactionHash = event.transaction.hash
+  setDelegates.save()
+}
 
 /**************************************/
 /*** Surplus Auction Event Handlers ***/

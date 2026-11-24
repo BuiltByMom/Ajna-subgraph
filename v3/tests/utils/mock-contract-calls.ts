@@ -59,9 +59,11 @@ function bytes32(text: string): Bytes {
 /*** Pool snapshot ***/
 /*********************/
 
-// What the two PoolInfoUtilsMulticall reads return for a pool. Values are WADs.
+// What the two PoolInfoUtilsMulticall reads, and the pool's own totalT0Debt, return for a pool.
+// Values are WADs.
 export class PoolSnapshot {
   poolSize: BigInt = ZERO_BI
+  t0debt: BigInt = ZERO_BI
   inflator: BigInt = ONE_WAD_BI
   borrowRate: BigInt = ZERO_BI
   rateAtTarget: BigInt = ZERO_BI
@@ -131,6 +133,8 @@ export function mockPoolSnapshot(multicall: Address, pool: Address, snapshot: Po
   createMockedFunction(multicall, "poolBalanceDetails", POOL_BALANCES_SIGNATURE)
     .withArgs([ethereum.Value.fromAddress(pool)])
     .returns([ethereum.Value.fromTuple(balances)])
+
+  createMockedFunction(pool, "totalT0Debt", "totalT0Debt():(uint256)").returns([uintValue(snapshot.t0debt)])
 }
 
 // the readers' interest projection reverting, as it can after a pool's own accrual has failed
@@ -150,6 +154,7 @@ export class BucketState {
   collateral: BigInt = ZERO_BI
   lp: BigInt = ZERO_BI
   exchangeRate: BigInt = ONE_WAD_BI
+  t0debt: BigInt = ZERO_BI
 }
 
 export function mockBucketInfo(poolInfoUtils: Address, pool: Address, index: i32, bucket: BucketState): void {
@@ -166,6 +171,10 @@ export function mockBucketInfo(poolInfoUtils: Address, pool: Address, index: i32
       uintValue(bucket.lp),
       uintValue(bucket.exchangeRate)
     ])
+
+  createMockedFunction(pool, "bucketT0Debt", "bucketT0Debt(uint256):(uint256)")
+    .withArgs([indexValue(index)])
+    .returns([uintValue(bucket.t0debt)])
 }
 
 // What the pool holds for a lender in one bucket: PoolInfoUtils.lenderPosition and the pool's lenderInfo.
@@ -212,4 +221,39 @@ export function mockLender(
   createMockedFunction(pool, "lenderInfo", "lenderInfo(uint256,address):(uint256,uint256)")
     .withArgs([indexValue(index), ethereum.Value.fromAddress(lender)])
     .returns([uintValue(state.lp), uintValue(state.depositTime)])
+}
+
+/*************/
+/*** Loans ***/
+/*************/
+
+// What the pool's loanDetails returns for a live loan. Values other than the index and expiry are WADs.
+export class LoanState {
+  t0Debt: BigInt = ZERO_BI
+  collateral: BigInt = ZERO_BI
+  t0Tp: BigInt = ZERO_BI
+  bucketIndex: i32 = 0
+  expiry: BigInt = ZERO_BI
+  inflatorAtDraw: BigInt = ONE_WAD_BI
+}
+
+const LOAN_DETAILS_SIGNATURE = "loanDetails(bytes32):(address,uint256,uint256,uint256,uint256,uint256,uint256)"
+
+export function mockLoan(pool: Address, loanId: Bytes, borrower: Address, state: LoanState): void {
+  createMockedFunction(pool, "loanDetails", LOAN_DETAILS_SIGNATURE)
+    .withArgs([ethereum.Value.fromFixedBytes(loanId)])
+    .returns([
+      ethereum.Value.fromAddress(borrower),
+      uintValue(state.t0Debt),
+      uintValue(state.collateral),
+      uintValue(state.t0Tp),
+      indexValue(state.bucketIndex),
+      uintValue(state.expiry),
+      uintValue(state.inflatorAtDraw)
+    ])
+}
+
+// a loan left with neither debt nor collateral is deleted, and reads as zeros
+export function mockDeletedLoan(pool: Address, loanId: Bytes): void {
+  mockLoan(pool, loanId, Address.zero(), new LoanState())
 }

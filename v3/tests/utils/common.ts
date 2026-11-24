@@ -13,7 +13,19 @@ export function wad(n: i32): BigInt {
   return BigInt.fromI32(n).times(ONE_WAD_BI)
 }
 
+// a decimal number of whole units as a WAD, e.g. wadOf("10.25")
+export function wadOf(decimal: string): BigInt {
+  const parts = decimal.split(".")
+  const fraction = parts.length > 1 ? parts[1] : ""
+  return BigInt.fromString(parts[0] + fraction.padEnd(18, "0"))
+}
+
 export const THIRTY_DAYS = BigInt.fromI32(2592000)
+
+// The pool's id for a borrower's loan: the borrower's address followed by a 12-byte counter.
+export function loanId(borrower: Address, counter: i32): Bytes {
+  return Bytes.fromHexString(borrower.toHexString() + counter.toString(16).padStart(24, "0"))
+}
 
 export function blockTimestamp(blockNumber: i32): BigInt {
   return BigInt.fromI32(1700000000 + blockNumber * 12)

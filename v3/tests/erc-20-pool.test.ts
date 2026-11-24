@@ -134,7 +134,8 @@ describe("ERC20Pool lender events", () => {
   test("AddQuoteToken records the deposit and refreshes the pool, bucket and lend", () => {
     const snapshot = new PoolSnapshot()
     snapshot.poolSize = wad(1000)
-    snapshot.debt = wad(500)
+    snapshot.debt = wad(510)
+    snapshot.t0debt = wad(500)
     snapshot.inflator = BigInt.fromString("1020000000000000000") // 1.02
     snapshot.borrowRate = FIVE_PERCENT
     snapshot.rateAtTarget = BigInt.fromString("40000000000000000") // 0.04
@@ -157,6 +158,7 @@ describe("ERC20Pool lender events", () => {
     bucket.deposit = wad(1000)
     bucket.lp = wad(800)
     bucket.exchangeRate = BigInt.fromString("1250000000000000000")
+    bucket.t0debt = wad(300)
     mockBucket(INDEX, bucket)
     mockLenderIn(INDEX, LENDER, unmarkedLender(wad(400), wad(500), blockTimestamp(101)))
 
@@ -175,7 +177,8 @@ describe("ERC20Pool lender events", () => {
 
     const poolId = POOL.toHexString()
     assert.fieldEquals("Pool", poolId, "poolSize", "1000")
-    assert.fieldEquals("Pool", poolId, "debt", "500")
+    assert.fieldEquals("Pool", poolId, "debt", "510")
+    assert.fieldEquals("Pool", poolId, "t0debt", "500")
     assert.fieldEquals("Pool", poolId, "inflator", "1.02")
     assert.fieldEquals("Pool", poolId, "borrowRate", "0.05")
     assert.fieldEquals("Pool", poolId, "rateAtTarget", "0.04")
@@ -205,6 +208,7 @@ describe("ERC20Pool lender events", () => {
     assert.fieldEquals("Bucket", id, "collateral", "0")
     assert.fieldEquals("Bucket", id, "lpb", "800")
     assert.fieldEquals("Bucket", id, "exchangeRate", "1.25")
+    assert.fieldEquals("Bucket", id, "t0debt", "300")
     assert.fieldEquals("Bucket", id, "updatedAtBlockNumber", "101")
 
     const lend = lendId(POOL, INDEX, LENDER)
@@ -253,6 +257,9 @@ describe("ERC20Pool lender events", () => {
     assert.fieldEquals("Lend", lendId(POOL, INDEX, LENDER), "lpb", "200")
     assert.fieldEquals("Lend", lendId(POOL, INDEX, LENDER), "lpbValueInQuote", "200")
     assert.fieldEquals("Pool", POOL.toHexString(), "collateralBalance", "2")
+    // collateral in a bucket is owed to lenders, not pledged by borrowers
+    assert.fieldEquals("Pool", POOL.toHexString(), "lenderCollateral", "2")
+    assert.fieldEquals("Pool", POOL.toHexString(), "pledgedCollateral", "0")
     assert.fieldEquals("Pool", POOL.toHexString(), "txCount", "1")
     assert.fieldEquals("Account", LENDER.toHexString(), "txCount", "1")
   })
@@ -356,6 +363,7 @@ describe("ERC20Pool lender events", () => {
     assert.fieldEquals("RemoveCollateral", eventId, "amount", "1")
     assert.fieldEquals("RemoveCollateral", eventId, "lpRedeemed", "100")
     assert.fieldEquals("Bucket", bucketId(POOL, INDEX), "collateral", "1")
+    assert.fieldEquals("Pool", POOL.toHexString(), "lenderCollateral", "1")
     assert.fieldEquals("Lend", lendId(POOL, INDEX, LENDER), "lpb", "100")
     assert.fieldEquals("Account", LENDER.toHexString(), "txCount", "2")
   })

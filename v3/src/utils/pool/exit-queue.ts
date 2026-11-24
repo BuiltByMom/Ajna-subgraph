@@ -3,7 +3,7 @@ import { Address, BigInt, ethereum, store } from "@graphprotocol/graph-ts"
 import { Bucket, ExitQueuePlace, Pool } from "../../../generated/schema"
 
 import { ensureAccount } from "../account"
-import { ZERO_BD } from "../constants"
+import { ZERO_BI } from "../constants"
 import { wadToDecimal } from "../convert"
 import { getLendId } from "./lend"
 
@@ -12,6 +12,10 @@ import { getLendId } from "./lend"
 // a lender's place, by the amounts its events carry and nowhere else. And whether a removal is a
 // claim from escrow depends on whether the lender was marked when it happened, which a read of
 // end-of-block state cannot tell: a lender can mark and claim everything within one block.
+//
+// A place is tracked in the pool's exact integer amounts (queueStartWad, lpbWad). Whether it has
+// ended decides how the lender's later removals are treated, and BigDecimal keeps 34 significant
+// digits, so a very large place would not subtract back to exactly zero.
 //
 // Callers save the bucket.
 
@@ -36,7 +40,9 @@ export function openExitQueuePlace(
   place.lender = lender
   place.account = lender
   ensureAccount(lender)
+  place.queueStartWad = queueStart
   place.queueStart = wadToDecimal(queueStart)
+  place.lpbWad = lp
   place.lpb = wadToDecimal(lp)
   place.markedAtBlockNumber = block.number
   place.markedAtTimestamp = block.timestamp
@@ -58,10 +64,11 @@ function claimFromPlace(bucket: Bucket, lender: Address, lpRedeemed: BigInt): bo
   const place = loadPlace(bucket, lender)
   if (place == null) return false
 
-  const redeemed = wadToDecimal(lpRedeemed)
-  place.queueStart = place.queueStart.plus(redeemed)
-  place.lpb = place.lpb.minus(redeemed)
-  if (place.lpb.gt(ZERO_BD)) {
+  place.queueStartWad = place.queueStartWad.plus(lpRedeemed)
+  place.lpbWad = place.lpbWad.minus(lpRedeemed)
+  if (place.lpbWad.gt(ZERO_BI)) {
+    place.queueStart = wadToDecimal(place.queueStartWad)
+    place.lpb = wadToDecimal(place.lpbWad)
     place.save()
   } else {
     store.remove("ExitQueuePlace", place.id.toHexString())

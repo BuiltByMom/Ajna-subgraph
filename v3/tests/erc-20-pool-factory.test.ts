@@ -10,6 +10,7 @@ import {
   mockLoanTerm,
   mockPoolSnapshot,
   mockPoolSnapshotReverts,
+  mockPoolT0Debt,
   mockTokenBytes32Info,
   mockTokenBytes32InfoReverts,
   mockTokenDecimals,
@@ -183,6 +184,7 @@ describe("handlePoolCreated", () => {
     mockTokenInfo(COLLATERAL, "Collateral Token", "COLL", 18)
     mockTokenInfo(QUOTE, "Quote Token", "QUOTE", 18)
     mockPoolSnapshotReverts(deployment.poolInfoUtilsMulticall, pool)
+    mockPoolT0Debt(pool, BigInt.zero())
 
     handlePoolCreated(createPoolCreatedEvent(deployment.factory, pool, COLLATERAL, QUOTE, CREATED_AT, 0))
 

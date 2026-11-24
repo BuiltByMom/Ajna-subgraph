@@ -1,5 +1,5 @@
 import { afterEach, assert, beforeEach, clearStore, describe, test } from "matchstick-as/assembly/index"
-import { Address, BigInt } from "@graphprotocol/graph-ts"
+import { Address, BigInt, ethereum } from "@graphprotocol/graph-ts"
 
 import {
   handleAddCollateral,
@@ -560,6 +560,7 @@ describe("ERC20Pool LP events", () => {
     assert.fieldEquals("LPAllowance", allowanceId(LENDER, OTHER_LENDER, INDEX), "allowanceList", listId)
     assert.fieldEquals("LPAllowance", allowanceId(LENDER, OTHER_LENDER, INDEX), "index", "2550")
     assert.fieldEquals("LPAllowance", allowanceId(LENDER, OTHER_LENDER, INDEX), "amount", "100")
+    assert.fieldEquals("LPAllowance", allowanceId(LENDER, OTHER_LENDER, INDEX), "amountWad", wad(100).toString())
     assert.fieldEquals("LPAllowance", allowanceId(LENDER, OTHER_LENDER, OTHER_INDEX), "amount", "50")
 
     // a further increase adds to the allowance
@@ -590,6 +591,59 @@ describe("ERC20Pool LP events", () => {
     assert.fieldEquals("LPAllowance", allowanceId(LENDER, OTHER_LENDER, INDEX), "amount", "1")
     assert.fieldEquals("LPAllowance", allowanceId(LENDER, thirdParty, INDEX), "amount", "2")
     assert.fieldEquals("LPAllowance", allowanceId(OTHER_LENDER, LENDER, INDEX), "amount", "3")
+  })
+
+  test("skips an allowance for an index that is not a bucket, which the pool accepts", () => {
+    // The pool takes any uint256 as the index. One too large for an Int used to abort the handler.
+    const huge = BigInt.fromString("1099511627776") // 2^40
+    const pastLastBucket = BigInt.fromI32(7389)
+    const increase = createIncreaseLPAllowanceEvent(POOL, 101, 0, LENDER, OTHER_LENDER, [INDEX, 0, 0], [
+      wad(1),
+      wad(2),
+      wad(3)
+    ])
+    increase.parameters[2].value = ethereum.Value.fromUnsignedBigIntArray([BigInt.fromI32(INDEX), huge, pastLastBucket])
+    handleIncreaseLPAllowance(increase)
+
+    // only the allowance in a real bucket is stored
+    assert.entityCount("LPAllowance", 1)
+    assert.fieldEquals("LPAllowance", allowanceId(LENDER, OTHER_LENDER, INDEX), "amount", "1")
+
+    // decreasing and revoking at such an index is harmless too
+    const decrease = createDecreaseLPAllowanceEvent(POOL, 102, 0, LENDER, OTHER_LENDER, [0], [wad(0)])
+    decrease.parameters[2].value = ethereum.Value.fromUnsignedBigIntArray([huge])
+    handleDecreaseLPAllowance(decrease)
+    const revoke = createRevokeLPAllowanceEvent(POOL, 103, 0, LENDER, OTHER_LENDER, [0])
+    revoke.parameters[2].value = ethereum.Value.fromUnsignedBigIntArray([huge])
+    handleRevokeLPAllowance(revoke)
+    assert.entityCount("LPAllowance", 1)
+
+    // an allowance at nothing but such indexes stores no list either
+    const onlyInvalid = createIncreaseLPAllowanceEvent(POOL, 104, 0, OTHER_LENDER, LENDER, [0], [wad(1)])
+    onlyInvalid.parameters[2].value = ethereum.Value.fromUnsignedBigIntArray([huge])
+    handleIncreaseLPAllowance(onlyInvalid)
+    assert.entityCount("LPAllowanceList", 1)
+  })
+
+  test("an allowance of the largest uint256 is removed exactly when decreases use it up", () => {
+    // BigDecimal keeps 34 digits, so this is tracked in the contract's exact integer amounts
+    const max = BigInt.fromString("115792089237316195423570985008687907853269984665640564039457584007913129639935")
+    const half = BigInt.fromString("57896044618658097711785492504343953926634992332820282019728792003956564819968")
+    handleIncreaseLPAllowance(createIncreaseLPAllowanceEvent(POOL, 101, 0, LENDER, OTHER_LENDER, [INDEX], [max]))
+    assert.fieldEquals("LPAllowance", allowanceId(LENDER, OTHER_LENDER, INDEX), "amountWad", max.toString())
+
+    handleDecreaseLPAllowance(createDecreaseLPAllowanceEvent(POOL, 102, 0, LENDER, OTHER_LENDER, [INDEX], [half]))
+    assert.fieldEquals(
+      "LPAllowance",
+      allowanceId(LENDER, OTHER_LENDER, INDEX),
+      "amountWad",
+      max.minus(half).toString()
+    )
+
+    handleDecreaseLPAllowance(
+      createDecreaseLPAllowanceEvent(POOL, 103, 0, LENDER, OTHER_LENDER, [INDEX], [max.minus(half)])
+    )
+    assert.entityCount("LPAllowance", 0)
   })
 
   test("an allowance change that leaves nothing allowed stores no allowance", () => {
@@ -708,15 +762,25 @@ describe("ERC20Pool pool events", () => {
     assert.fieldEquals("Pool", POOL.toHexString(), "txCount", "0")
   })
 
-  test("UpdateInterestRate still sets the borrow rate when the pool cannot be read", () => {
-    mockPoolSnapshotReverts(deployment().poolInfoUtilsMulticall, POOL)
+  test("UpdateInterestRate still sets the borrow and lend rates when the pool cannot be read", () => {
+    // read at block 101: half of the deposits are lent
+    const snapshot = new PoolSnapshot()
+    snapshot.borrowRate = FIVE_PERCENT
+    snapshot.utilization = BigInt.fromString("500000000000000000") // 0.5
+    mockPool(snapshot)
+    handleUpdateInterestRate(createUpdateInterestRateEvent(POOL, 101, 0, BigInt.fromString("40000000000000000"), FIVE_PERCENT))
+    assert.fieldEquals("Pool", POOL.toHexString(), "lendRate", "0.024")
 
+    mockPoolSnapshotReverts(deployment().poolInfoUtilsMulticall, POOL)
     handleUpdateInterestRate(
-      createUpdateInterestRateEvent(POOL, 101, 0, FIVE_PERCENT, BigInt.fromString("60000000000000000"))
+      createUpdateInterestRateEvent(POOL, 102, 0, FIVE_PERCENT, BigInt.fromString("60000000000000000"))
     )
 
     assert.fieldEquals("Pool", POOL.toHexString(), "borrowRate", "0.06")
-    assert.fieldEquals("Pool", POOL.toHexString(), "updatedAtBlockNumber", "100")
+    // 0.06 * 0.96 at the utilization of 0.5 last read
+    assert.fieldEquals("Pool", POOL.toHexString(), "lendRate", "0.0288")
+    assert.fieldEquals("Pool", POOL.toHexString(), "utilization", "0.5")
+    assert.fieldEquals("Pool", POOL.toHexString(), "updatedAtBlockNumber", "101")
   })
 
   test("InterestUpdateFailure is counted and recorded, whether or not the pool can be read", () => {

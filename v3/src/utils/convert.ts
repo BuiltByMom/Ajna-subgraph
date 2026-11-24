@@ -7,6 +7,11 @@ export function wadToDecimal(wad: BigInt): BigDecimal {
   return wad.toBigDecimal().div(EXP_18_BD)
 }
 
+// convert a decimal to an 18 decimal int, dropping anything below 1e-18
+export function decimalToWad(value: BigDecimal): BigInt {
+  return BigInt.fromString(value.times(EXP_18_BD).truncate(0).toString())
+}
+
 // convert an amount in a token's own decimals to a decimal
 export function tokenAmountToDecimal(amount: BigInt, decimals: i32): BigDecimal {
   return amount.toBigDecimal().div(TEN_BI.pow(<u8>decimals).toBigDecimal())

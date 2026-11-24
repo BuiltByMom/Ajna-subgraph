@@ -51,6 +51,7 @@ Ajna v3 has one pool factory per loan term, and each factory has its own Positio
 - To support another loan term, add an entry to `deployments`.
 - To support another network, add a config file.
 - `description` is for readers only.
+- The two reader contracts must be deployed before the factory creates its first pool. Bucket, lend and loan reads go to them from that pool's first event, and a read of an address with no code yet stops the subgraph. `yarn configure` does not check this.
 
 Mappings must not assume a network has one factory, PositionManager or reader contract. `src/utils/deployments.ts` finds the deployment for the address that emitted an event, or for a pool through the pool's factory.
 
@@ -70,9 +71,14 @@ The entity that records an event (`AddQuoteToken`, `DrawDebt` and so on) keeps t
 Some values are added up from events instead, because the contract changes them by exactly an event's amount and nowhere else:
 
 - on the pool: `txCount`, the flashloan totals, `interestUpdateFailures`, `pledgedCollateral` and `lenderCollateral`. `loansCount` follows the loans' status.
-- the exit queue: a bucket's `queueHead`, `queueTail`, `escrowQuote` and `escrowCollateral`, and every `ExitQueuePlace`. These are exact after each event, not only at the end of the block.
+- the exit queue: a bucket's `queueHead`, `queueTail`, `escrowQuote` and `escrowCollateral`, and every `ExitQueuePlace`. These are right after each event, not only at the end of the block.
+- LP allowances.
 
-If the reader contracts revert for a pool, which can happen after the pool emits `InterestUpdateFailure`, the pool keeps its last state and its `updatedAtBlockNumber` does not advance.
+### Precision
+
+`BigDecimal` keeps 34 significant digits, which is exact for any amount below 1e16 whole units. Where the subgraph itself must tell when an amount reaches zero, it also stores the contract's exact integer (1e18 per unit) in a field ending in `Wad` and does its arithmetic on that: `ExitQueuePlace.lpbWad` and `queueStartWad`, and `LPAllowance.amountWad`. Totals added up from events in `BigDecimal`, such as a bucket's escrow, can be off in the last digit only when amounts exceed that size.
+
+If the reader contracts revert for a pool, which can happen after the pool emits `InterestUpdateFailure`, the pool keeps its last state and its `updatedAtBlockNumber` does not advance. Two things still move: `t0debt`, which is read from the pool itself, and the borrow and lend rates when an `UpdateInterestRate` arrives.
 
 ### Debt
 
@@ -111,7 +117,7 @@ This covers the entities written so far. Fields and entities that belong to the 
 | ------ | ------ |
 | `PoolFactory` | Adds `loanTerm`. `pools` is derived. `poolType` and `txCount` are gone. |
 | `Pool` | Adds `factory`, `loanTerm`, `debt`, `rateAtTarget`, `utilization`, `escrowedQuote`, `availableQuote`, `lenderCollateral`, the six surplus fields, `interestUpdateFailures` and `updatedAt*`. `t0debt` now holds t0 debt (v2 stored the debt there). `loansCount` counts loans with debt. Prices (`hpb`, `htp`, `lup`), fees, reserves, burn epoch, bonds, liquidations, `totalInterestEarned`, `maxBorrower`, `minDebtAmount`, `actualUtilization`, `targetUtilization`, `poolType` and the ERC721 fields are gone. |
-| `Pool.txCount`, `Token.txCount`, `Account.txCount` | Count actions. `UpdateInterestRate`, `InterestUpdateFailure`, `LoanClosed` and `ImproveLoan` are emitted as part of another action and are not counted. An account's count covers its lender actions and every action on its loans, including a call or a move by someone else. |
+| `Pool.txCount`, `Token.txCount`, `Account.txCount` | Count actions. `UpdateInterestRate`, `InterestUpdateFailure`, `LoanClosed`, `ImproveLoan` and `ExitQueueFunded` are emitted as part of another action and are not counted. An account's count covers its lender actions and every action on its loans, including a call or a move by someone else. |
 | `Token` | `pools` is split into the derived `poolsAsCollateral` and `poolsAsQuote`. `tokenType` and `totalSupply` are gone. |
 | `Bucket` | `lends` is derived. Adds `t0debt`, `loans`, `queueHead`, `queueTail`, `escrowQuote`, `escrowCollateral`, `exitQueuePlaces` and `updatedAt*`. `deposit`, `collateral` and `lpb` exclude what the exit queue has moved to escrow. |
 | `Lend` | Adds `account`, `marked`, `liveLpb`, `fundedValueInQuote` and `updatedAt*`. `lpbValueInQuote` includes LP the exit queue has funded. |
@@ -120,6 +126,7 @@ This covers the entities written so far. Fields and entities that belong to the 
 | `Account` | `lends`, `loans` and `exitQueuePlaces` are derived. `pools` and the liquidation, reserve auction and grant fields are gone. |
 | `BorrowerDelegate` | New. |
 | `LPAllowanceList` | `allowances` is derived, and an empty list is kept. Ids are built from the raw address bytes. |
+| `LPAllowance` | Adds `allowanceList` and `amountWad`. An allowance for an index that is not a bucket, which the pool accepts, is not stored. |
 | `LPTransferorList` | Ids are built from the raw address bytes. |
 | `PoolCreated` | Adds `collateralToken` and `quoteToken`. `poolType` is gone. |
 | `AddQuoteToken`, `MoveQuoteToken`, `RemoveQuoteToken` | `lup` is gone. |
@@ -145,4 +152,5 @@ The script runs `forge build` in the checkout, so it needs Foundry and `jq`. `ya
 
 ## Known issues
 
+- On Linux, `yarn test` works on Ubuntu 22.04 only. graph-cli 0.56 asks for the Matchstick binary built for the Ubuntu version it runs on, and Matchstick 0.6.0 is published for Ubuntu 22 alone. On another version, download `binary-linux-22` from the release below and run it from this directory.
 - On Apple silicon newer than M2, `yarn test` fails with `Unsupported platform`, because graph-cli 0.56 does not recognise the CPU. Download `binary-macos-11-m1` from the [Matchstick 0.6.0 release](https://github.com/LimeChain/matchstick/releases/tag/0.6.0), the version `yarn test` uses, and run it from this directory instead.

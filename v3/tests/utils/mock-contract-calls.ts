@@ -134,7 +134,12 @@ export function mockPoolSnapshot(multicall: Address, pool: Address, snapshot: Po
     .withArgs([ethereum.Value.fromAddress(pool)])
     .returns([ethereum.Value.fromTuple(balances)])
 
-  createMockedFunction(pool, "totalT0Debt", "totalT0Debt():(uint256)").returns([uintValue(snapshot.t0debt)])
+  mockPoolT0Debt(pool, snapshot.t0debt)
+}
+
+// the pool's stored t0 debt, which is read from the pool itself and so stays readable when the readers revert
+export function mockPoolT0Debt(pool: Address, t0debt: BigInt): void {
+  createMockedFunction(pool, "totalT0Debt", "totalT0Debt():(uint256)").returns([uintValue(t0debt)])
 }
 
 // the readers' interest projection reverting, as it can after a pool's own accrual has failed

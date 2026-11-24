@@ -34,7 +34,8 @@ import {
   mockDeletedLoan,
   mockLoan,
   mockPoolSnapshot,
-  mockPoolSnapshotReverts
+  mockPoolSnapshotReverts,
+  mockPoolT0Debt
 } from "./utils/mock-contract-calls"
 
 // These tests run against whichever config `yarn configure` last rendered, using its first
@@ -206,6 +207,7 @@ describe("ERC20Pool loan events", () => {
   test("opens a loan when the pool cannot be read, taking the inflator at draw from the loan", () => {
     // the pool's inflator is still the 1 read when the pool was created
     mockPoolSnapshotReverts(deployment().poolInfoUtilsMulticall, POOL)
+    mockPoolT0Debt(POOL, wad(1000))
     mockBucketDebt(INDEX, wad(1000), wad(0))
     const loan = liveLoan(wad(1000), wad(20), wadOf("52.5"), INDEX, 101)
     loan.inflatorAtDraw = BigInt.fromString("1020000000000000000") // 1.02
@@ -219,6 +221,8 @@ describe("ERC20Pool loan events", () => {
     assert.fieldEquals("Loan", id, "inflatorAtDraw", "1.02")
     assert.fieldEquals("Pool", POOL.toHexString(), "inflator", "1")
     assert.fieldEquals("Pool", POOL.toHexString(), "updatedAtBlockNumber", "100")
+    // t0 debt is read from the pool itself, so it still matches the loans
+    assert.fieldEquals("Pool", POOL.toHexString(), "t0debt", "1000")
     // what follows from the event and the loan is still recorded
     assert.fieldEquals("Pool", POOL.toHexString(), "loansCount", "1")
     assert.fieldEquals("Pool", POOL.toHexString(), "pledgedCollateral", "20")

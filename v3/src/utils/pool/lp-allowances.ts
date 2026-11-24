@@ -2,11 +2,15 @@ import { BigInt, Bytes, store } from "@graphprotocol/graph-ts"
 
 import { LPAllowance, LPAllowanceList } from "../../../generated/schema"
 
-import { ZERO_BD } from "../constants"
+import { MAX_BUCKET_INDEX_BI, ZERO_BI } from "../constants"
 import { wadToDecimal } from "../convert"
 
 // The pool changes an allowance by exactly the event's amount, so these follow the events
 // without reading the chain. A transfer also clears the allowance it used: see clearAllowances.
+//
+// The arithmetic is done on the exact integer amounts (amountWad). BigDecimal keeps 34
+// significant digits, so an allowance of the largest uint256, which is a common way to approve
+// "everything", would not subtract back to exactly zero.
 
 export function getAllowanceListId(poolId: Bytes, lender: Bytes, spender: Bytes): Bytes {
   const separator = Bytes.fromUTF8("|")
@@ -17,12 +21,30 @@ export function getAllowanceId(allowanceListId: Bytes, index: BigInt): Bytes {
   return allowanceListId.concat(Bytes.fromUTF8("|" + index.toString()))
 }
 
+// The pool does not check an allowance's bucket index: it accepts any uint256. An index past the
+// last bucket is skipped. It could not be stored as an Int (converting one that does not fit
+// aborts the handler, which would halt the subgraph), and it grants nothing, since transferLP
+// rejects it.
+function isBucketIndex(index: BigInt): boolean {
+  return index.le(MAX_BUCKET_INDEX_BI)
+}
+
+function ensureAllowanceList(listId: Bytes, poolId: Bytes, lender: Bytes, spender: Bytes): void {
+  if (LPAllowanceList.load(listId) != null) return
+  const list = new LPAllowanceList(listId)
+  list.pool = poolId
+  list.lender = lender
+  list.spender = spender
+  list.save()
+}
+
 function removeAllowance(allowanceId: Bytes): void {
   if (LPAllowance.load(allowanceId) != null) store.remove("LPAllowance", allowanceId.toHexString())
 }
 
 function saveOrRemoveAllowance(allowance: LPAllowance): void {
-  if (allowance.amount.gt(ZERO_BD)) {
+  if (allowance.amountWad.gt(ZERO_BI)) {
+    allowance.amount = wadToDecimal(allowance.amountWad)
     allowance.save()
   } else {
     removeAllowance(allowance.id)
@@ -37,24 +59,19 @@ export function increaseAllowances(
   amounts: BigInt[]
 ): void {
   const listId = getAllowanceListId(poolId, lender, spender)
-  if (LPAllowanceList.load(listId) == null) {
-    const list = new LPAllowanceList(listId)
-    list.pool = poolId
-    list.lender = lender
-    list.spender = spender
-    list.save()
-  }
-
   for (let i = 0; i < indexes.length; i++) {
+    if (!isBucketIndex(indexes[i])) continue
+
     const allowanceId = getAllowanceId(listId, indexes[i])
     let allowance = LPAllowance.load(allowanceId)
     if (allowance == null) {
       allowance = new LPAllowance(allowanceId)
       allowance.allowanceList = listId
       allowance.index = indexes[i].toI32()
-      allowance.amount = ZERO_BD
+      allowance.amountWad = ZERO_BI
     }
-    allowance.amount = allowance.amount.plus(wadToDecimal(amounts[i]))
+    allowance.amountWad = allowance.amountWad.plus(amounts[i])
+    if (allowance.amountWad.gt(ZERO_BI)) ensureAllowanceList(listId, poolId, lender, spender)
     saveOrRemoveAllowance(allowance)
   }
 }
@@ -70,7 +87,7 @@ export function decreaseAllowances(
   for (let i = 0; i < indexes.length; i++) {
     const allowance = LPAllowance.load(getAllowanceId(listId, indexes[i]))
     if (allowance != null) {
-      allowance.amount = allowance.amount.minus(wadToDecimal(amounts[i]))
+      allowance.amountWad = allowance.amountWad.minus(amounts[i])
       saveOrRemoveAllowance(allowance)
     }
   }

@@ -143,6 +143,8 @@ describe("ERC20Pool exit queue", () => {
     assert.fieldEquals("ExitQueuePlace", place, "account", LENDER.toHexString())
     assert.fieldEquals("ExitQueuePlace", place, "queueStart", "0")
     assert.fieldEquals("ExitQueuePlace", place, "lpb", "1000")
+    assert.fieldEquals("ExitQueuePlace", place, "queueStartWad", "0")
+    assert.fieldEquals("ExitQueuePlace", place, "lpbWad", wad(1000).toString())
     assert.fieldEquals("ExitQueuePlace", place, "markedAtBlockNumber", "102")
     assert.fieldEquals("ExitQueuePlace", place, "markedAtTimestamp", blockTimestamp(102).toString())
 
@@ -245,6 +247,8 @@ describe("ERC20Pool exit queue", () => {
     assert.fieldEquals("RemoveQuoteToken", eventEntityId(first), "amount", "400")
     assert.fieldEquals("ExitQueuePlace", lendId(LENDER), "queueStart", "400")
     assert.fieldEquals("ExitQueuePlace", lendId(LENDER), "lpb", "600")
+    assert.fieldEquals("ExitQueuePlace", lendId(LENDER), "queueStartWad", wad(400).toString())
+    assert.fieldEquals("ExitQueuePlace", lendId(LENDER), "lpbWad", wad(600).toString())
     assert.fieldEquals("Bucket", bucketId(), "escrowQuote", "600")
     // a claim moves neither end of the queue, and takes nothing from the bucket
     assert.fieldEquals("Bucket", bucketId(), "queueHead", "1000")
@@ -279,6 +283,114 @@ describe("ERC20Pool exit queue", () => {
     assert.entityCount("ExitQueuePlace", 0)
     assert.fieldEquals("Bucket", bucketId(), "escrowQuote", "0")
     assert.fieldEquals("Lend", lendId(LENDER), "marked", "false")
+  })
+
+  test("one funding can cover a whole place and part of the next, and each lender claims their own part", () => {
+    deposit1000()
+    mockBucket(wad(1500), wad(1500), wad(0), wad(1500))
+    mockLenderState(OTHER_LENDER, unmarkedLender(wad(500), wad(500), blockTimestamp(101)))
+    handleAddQuoteToken(createAddQuoteTokenEvent(POOL, 101, 1, OTHER_LENDER, INDEX, wad(500), wad(500)))
+    // both mark while the bucket's deposit is lent out: LENDER's place is 0 to 1000, the other's 1000 to 1500
+    mockLenderState(LENDER, markedLender(wad(1000), wad(1000), wad(1000), wad(0), blockTimestamp(101)))
+    handleMarkQuoteForWithdrawal(createMarkQuoteForWithdrawalEvent(POOL, 102, 0, LENDER, INDEX, wad(1000), wad(0)))
+    mockLenderState(OTHER_LENDER, markedLender(wad(500), wad(500), wad(500), wad(0), blockTimestamp(101)))
+    handleMarkQuoteForWithdrawal(createMarkQuoteForWithdrawalEvent(POOL, 102, 1, OTHER_LENDER, INDEX, wad(500), wad(1000)))
+
+    // A deposit of 1200 by a third lender funds 1200 LP of the queue: all of the first place and
+    // 200 of the second. The head stops inside the second place.
+    const third = testAddress(0x8003)
+    mockPool(wad(1500), wad(1200))
+    mockBucket(wad(1500), wad(1500), wad(0), wad(1500))
+    mockLenderState(third, unmarkedLender(wad(1200), wad(1200), blockTimestamp(103)))
+    handleExitQueueFunded(createExitQueueFundedEvent(POOL, 103, 0, INDEX, wad(1200), wad(1200), wad(0), wad(1200)))
+    handleAddQuoteToken(createAddQuoteTokenEvent(POOL, 103, 1, third, INDEX, wad(1200), wad(1200)))
+
+    assert.fieldEquals("Bucket", bucketId(), "queueHead", "1200")
+    assert.fieldEquals("Bucket", bucketId(), "queueTail", "1500")
+    assert.fieldEquals("Bucket", bucketId(), "escrowQuote", "1200")
+    // the funding names neither lender, so their places are unchanged: the head tells what is funded
+    assert.fieldEquals("ExitQueuePlace", lendId(LENDER), "queueStart", "0")
+    assert.fieldEquals("ExitQueuePlace", lendId(LENDER), "lpb", "1000")
+    assert.fieldEquals("ExitQueuePlace", lendId(OTHER_LENDER), "queueStart", "1000")
+    assert.fieldEquals("ExitQueuePlace", lendId(OTHER_LENDER), "lpb", "500")
+
+    // The second lender claims the 200 that is funded. They now hold 300 LP still in the bucket
+    // and nothing funded.
+    mockPool(wad(1500), wad(1000))
+    mockLenderState(OTHER_LENDER, markedLender(wad(300), wad(300), wad(300), wad(0), blockTimestamp(101)))
+    const partClaim = createRemoveQuoteTokenEvent(POOL, 104, 0, OTHER_LENDER, INDEX, wad(200), wad(200))
+    handleRemoveQuoteToken(partClaim)
+
+    assert.fieldEquals("RemoveQuoteToken", eventEntityId(partClaim), "isExitClaim", "true")
+    // the place now starts at the head: none of what is left of it is funded
+    assert.fieldEquals("ExitQueuePlace", lendId(OTHER_LENDER), "queueStart", "1200")
+    assert.fieldEquals("ExitQueuePlace", lendId(OTHER_LENDER), "lpb", "300")
+    assert.fieldEquals("Bucket", bucketId(), "escrowQuote", "1000")
+    assert.fieldEquals("Lend", lendId(OTHER_LENDER), "lpb", "300")
+    assert.fieldEquals("Lend", lendId(OTHER_LENDER), "liveLpb", "300")
+    assert.fieldEquals("Lend", lendId(OTHER_LENDER), "fundedValueInQuote", "0")
+    assert.fieldEquals("Lend", lendId(OTHER_LENDER), "marked", "true")
+
+    // the first lender's place is untouched by the other's claim
+    assert.fieldEquals("ExitQueuePlace", lendId(LENDER), "queueStart", "0")
+    assert.fieldEquals("ExitQueuePlace", lendId(LENDER), "lpb", "1000")
+  })
+
+  test("a lend with LP both in the bucket and funded is worth the two parts together", () => {
+    deposit1000()
+    // The lender marks 1000 LP and the bucket's 600 idle quote funds part of it at once. Since
+    // then the 400 LP still in the bucket has earned interest and is worth 420.
+    mockPool(wad(420), wad(600))
+    mockBucket(wad(420), wad(400), wad(0), wad(400))
+    mockLenderState(LENDER, markedLender(wad(1000), wad(400), wad(420), wad(600), blockTimestamp(101)))
+    handleExitQueueFunded(createExitQueueFundedEvent(POOL, 102, 0, INDEX, wad(600), wad(600), wad(0), wad(600)))
+    handleMarkQuoteForWithdrawal(createMarkQuoteForWithdrawalEvent(POOL, 102, 1, LENDER, INDEX, wad(1000), wad(0)))
+
+    assert.fieldEquals("Lend", lendId(LENDER), "lpb", "1000")
+    assert.fieldEquals("Lend", lendId(LENDER), "liveLpb", "400")
+    assert.fieldEquals("Lend", lendId(LENDER), "fundedValueInQuote", "600")
+    // 420 for the LP in the bucket plus 600 funded
+    assert.fieldEquals("Lend", lendId(LENDER), "lpbValueInQuote", "1020")
+    // the head is inside the place: 600 of its 1000 LP is funded
+    assert.fieldEquals("Bucket", bucketId(), "queueHead", "600")
+    assert.fieldEquals("Bucket", bucketId(), "queueTail", "1000")
+    assert.fieldEquals("Bucket", bucketId(), "lpb", "400")
+    assert.fieldEquals("ExitQueuePlace", lendId(LENDER), "lpb", "1000")
+  })
+
+  test("a place larger than a BigDecimal can hold exactly still ends with its last claim", () => {
+    // 1e16 LP and a few wei: more significant digits than a BigDecimal keeps
+    const half = BigInt.fromString("5000000000000000000000000000000003")
+    const whole = half.times(BigInt.fromI32(2))
+    mockPool(whole, wad(0))
+    mockBucket(whole, whole, wad(0), wad(0))
+    mockLenderState(LENDER, unmarkedLender(whole, whole, blockTimestamp(101)))
+    handleAddQuoteToken(createAddQuoteTokenEvent(POOL, 101, 0, LENDER, INDEX, whole, whole))
+
+    mockPool(wad(0), whole)
+    mockBucket(wad(0), wad(0), wad(0), wad(0))
+    mockLenderState(LENDER, markedLender(whole, wad(0), wad(0), whole, blockTimestamp(101)))
+    handleExitQueueFunded(createExitQueueFundedEvent(POOL, 102, 0, INDEX, whole, whole, wad(0), whole))
+    handleMarkQuoteForWithdrawal(createMarkQuoteForWithdrawalEvent(POOL, 102, 1, LENDER, INDEX, whole, wad(0)))
+
+    mockLenderState(LENDER, markedLender(half, wad(0), wad(0), half, blockTimestamp(101)))
+    handleRemoveQuoteToken(createRemoveQuoteTokenEvent(POOL, 103, 0, LENDER, INDEX, half, half))
+    assert.fieldEquals("ExitQueuePlace", lendId(LENDER), "lpbWad", half.toString())
+    assert.fieldEquals("ExitQueuePlace", lendId(LENDER), "queueStartWad", half.toString())
+
+    mockLenderState(LENDER, new LenderState())
+    handleRemoveQuoteToken(createRemoveQuoteTokenEvent(POOL, 104, 0, LENDER, INDEX, half, half))
+    assert.notInStore("ExitQueuePlace", lendId(LENDER))
+
+    // so a later deposit and withdrawal by the same lender is not taken for a claim
+    mockBucket(wad(50), wad(50), wad(0), wad(0))
+    mockLenderState(LENDER, unmarkedLender(wad(50), wad(50), blockTimestamp(105)))
+    handleAddQuoteToken(createAddQuoteTokenEvent(POOL, 105, 0, LENDER, INDEX, wad(50), wad(50)))
+    mockBucket(wad(0), wad(0), wad(0), wad(0))
+    mockLenderState(LENDER, new LenderState())
+    const withdrawal = createRemoveQuoteTokenEvent(POOL, 106, 0, LENDER, INDEX, wad(50), wad(50))
+    handleRemoveQuoteToken(withdrawal)
+    assert.fieldEquals("RemoveQuoteToken", eventEntityId(withdrawal), "isExitClaim", "false")
   })
 
   test("LP too small to pay out is given up by the queue, or cleared by a claim that pays nothing", () => {

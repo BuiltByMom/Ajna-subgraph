@@ -31,7 +31,9 @@ jobs:
     timeout-minutes: 10
 
   v3:
-    runs-on: ubuntu-latest
+    # `graph test` (graph-cli 0.56) downloads the Matchstick binary named for the runner's Ubuntu
+    # version, and Matchstick 0.6.0 is published for Ubuntu 22 only.
+    runs-on: ubuntu-22.04
     defaults:
       run:
         working-directory: v3

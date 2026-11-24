@@ -1,4 +1,4 @@
-import { Address, ethereum, log } from "@graphprotocol/graph-ts"
+import { Address, BigDecimal, BigInt, ethereum, log } from "@graphprotocol/graph-ts"
 
 import { Pool } from "../../../generated/schema"
 import { ERC20Pool } from "../../../generated/templates/ERC20Pool/ERC20Pool"
@@ -59,6 +59,12 @@ export function loadPool(poolAddress: Address): Pool {
   return pool!
 }
 
+// The annual rate lenders earn on average across the pool: their share of the interest paid on
+// the part of the deposits that is lent. Both arguments and the lenders' share are WADs.
+export function lendRate(borrowRate: BigInt, utilization: BigInt): BigDecimal {
+  return wadToDecimal(wmul(wmul(borrowRate, LENDER_INTEREST_SHARE_BI), utilization))
+}
+
 function logUnreadable(pool: Pool, block: ethereum.Block): void {
   log.warning("updatePool: could not read pool {} at block {}; keeping its state from block {}", [
     pool.id.toHexString(),
@@ -74,11 +80,16 @@ function logUnreadable(pool: Pool, block: ethereum.Block): void {
 //
 // The readers project interest to the current block. Where the pool's own accrual failed
 // (InterestUpdateFailure), that projection can revert as well; the pool then keeps the state it
-// had, and updatedAtBlockNumber shows that it was not refreshed.
+// had, apart from its t0 debt, and updatedAtBlockNumber shows that it was not refreshed.
 export function updatePool(pool: Pool, block: ethereum.Block): void {
   if (pool.updatedAtBlockNumber.equals(block.number)) return
 
   const poolAddress = Address.fromBytes(pool.id)
+
+  // Read first, and whether or not the readers below can be: it is a stored value, so this call
+  // cannot revert, and the pool's t0 debt keeps matching its loans' while the rest is unreadable.
+  pool.t0debt = wadToDecimal(ERC20Pool.bind(poolAddress).totalT0Debt())
+
   const multicall = PoolInfoUtilsMulticall.bind(poolDeployment(pool).poolInfoUtilsMulticall)
   const detailsCall = multicall.try_poolDetailsMulticall(poolAddress)
   if (detailsCall.reverted) {
@@ -99,7 +110,7 @@ export function updatePool(pool: Pool, block: ethereum.Block): void {
   pool.borrowRate = wadToDecimal(rates.interestRate)
   pool.rateAtTarget = wadToDecimal(rates.rateAtTarget)
   pool.utilization = wadToDecimal(rates.utilization)
-  pool.lendRate = wadToDecimal(wmul(wmul(rates.interestRate, LENDER_INTEREST_SHARE_BI), rates.utilization))
+  pool.lendRate = lendRate(rates.interestRate, rates.utilization)
 
   const quoteSurplus = detailsCall.value.getQuoteSurplusInfo_()
   pool.quoteSurplus = wadToDecimal(quoteSurplus.surplus)
@@ -117,9 +128,6 @@ export function updatePool(pool: Pool, block: ethereum.Block): void {
   pool.collateralBalance = wadToDecimal(balances.collateralTokenBalance)
   pool.escrowedQuote = wadToDecimal(balances.escrowedQuote)
   pool.availableQuote = wadToDecimal(balances.availableQuote)
-
-  // the readers give debt at the pending inflator only; t0 debt is a stored value that cannot revert
-  pool.t0debt = wadToDecimal(ERC20Pool.bind(poolAddress).totalT0Debt())
 
   pool.updatedAtBlockNumber = block.number
   pool.updatedAtTimestamp = block.timestamp

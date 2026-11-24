@@ -6,6 +6,10 @@
 # Amounts, prices and rates are BigDecimal in whole units (the contracts' WAD values divided by
 # 1e18). Bucket indexes are Int. Counts, block numbers and timestamps are BigInt.
 #
+# BigDecimal keeps 34 significant digits. Where the subgraph itself has to tell when an amount
+# reaches zero, it also stores the contract's exact integer value in a field ending in Wad, and
+# does its arithmetic on that.
+#
 # Pool, Bucket, Lend and Loan hold contract state as it was at the end of the block of the last
 # event that refreshed them, recorded in updatedAtBlockNumber. Interest accrues between events, so
 # a value can be older than the block being queried. Debts are stored in t0 terms, which do not
@@ -92,8 +96,9 @@ type Pool @entity {
   buckets: [Bucket!]! @derivedFrom(field: "pool")
   loans: [Loan!]! @derivedFrom(field: "pool")
 
-  # block at which the fields read from the contracts were read: deposits and debt other than
-  # loansCount, rates, token balances and surplus
+  # Block at which the fields read from the contracts were read: deposits and debt other than
+  # loansCount, rates, token balances and surplus. t0debt alone is read at every event, including
+  # in a block where the rest could not be.
   updatedAtBlockNumber: BigInt!
   updatedAtTimestamp: BigInt!
 }
@@ -173,6 +178,8 @@ type ExitQueuePlace @entity {
   account: Account!             # the same lender, as an Account
   queueStart: BigDecimal!       # where the place starts on the queue, in LP; each claim moves it forward
   lpb: BigDecimal!              # LP left in the place: what was marked, less what claims have redeemed
+  queueStartWad: BigInt!        # queueStart as the contract's exact integer (1e18 per LP)
+  lpbWad: BigInt!               # lpb as the contract's exact integer (1e18 per LP)
   markedAtBlockNumber: BigInt!
   markedAtTimestamp: BigInt!
 }
@@ -255,12 +262,15 @@ type LPAllowanceList @entity {
   allowances: [LPAllowance!]! @derivedFrom(field: "allowanceList")
 }
 
-# An LP allowance in a single bucket. Removed when it is used, revoked or reduced to zero.
+# An LP allowance in a single bucket. Removed when it is used, revoked or reduced to zero. The
+# pool accepts an allowance for an index that is not a bucket; those grant nothing and are not
+# stored.
 type LPAllowance @entity {
   id: Bytes!                # $allowanceListId + '|' + $bucketIndex
   allowanceList: LPAllowanceList!
   index: Int!               # bucket index
   amount: BigDecimal!       # LP the spender may receive from this bucket
+  amountWad: BigInt!        # the same, as the contract's exact integer (1e18 per LP)
 }
 
 

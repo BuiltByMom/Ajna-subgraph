@@ -56,7 +56,7 @@ import {
 
 import { incrementAccountTxCount } from "../utils/account"
 import { ONE_BI } from "../utils/constants"
-import { bigIntArrayToIntArray, eventId, tokenAmountToDecimal, wadToDecimal } from "../utils/convert"
+import { bigIntArrayToIntArray, decimalToWad, eventId, tokenAmountToDecimal, wadToDecimal } from "../utils/convert"
 import { setBorrowerDelegates } from "../utils/pool/borrower-delegates"
 import { updateBucket } from "../utils/pool/bucket"
 import {
@@ -69,7 +69,7 @@ import { updateLend } from "../utils/pool/lend"
 import { createLoan, getLoanEntityId, loadLoan, refreshLoan } from "../utils/pool/loan"
 import { clearAllowances, decreaseAllowances, increaseAllowances } from "../utils/pool/lp-allowances"
 import { approveTransferors, revokeTransferors } from "../utils/pool/lp-transferors"
-import { countPoolAction, loadPool, updatePool } from "../utils/pool/pool"
+import { countPoolAction, lendRate, loadPool, updatePool } from "../utils/pool/pool"
 
 // Pool, Bucket, Lend and Loan are set from contract reads rather than from event amounts. A read
 // made while handling an event returns state as of the end of that event's block, so these
@@ -78,6 +78,11 @@ import { countPoolAction, loadPool, updatePool } from "../utils/pool/pool"
 //
 // The exceptions are values the contract changes by exactly an event's amount, which are added
 // up from the events: the pool's counters and collateral totals, and the exit queue.
+//
+// A bucket index in an event is converted to an Int, which aborts the handler, halting the
+// subgraph, if the value does not fit. That is safe only because the pool rejects an index
+// that is not a bucket in every call handled here except the LP allowance calls, which take
+// any uint256: lp-allowances.ts skips those. Check the contract before converting a new field.
 
 /*****************************/
 /*** Lender Event Handlers ***/
@@ -629,8 +634,10 @@ export function handleUpdateInterestRate(event: UpdateInterestRateEvent): void {
   const pool = loadPool(event.address)
   updatePool(pool, event.block)
   if (!pool.updatedAtBlockNumber.equals(event.block.number)) {
-    // the pool could not be read in this block, but the event still gives the rate it stored
+    // The pool could not be read in this block, but the event still gives the rate it stored.
+    // The lend rate follows it, at the utilization last read.
     pool.borrowRate = wadToDecimal(event.params.newRate)
+    pool.lendRate = lendRate(event.params.newRate, decimalToWad(pool.utilization))
   }
   pool.save()
 

@@ -6,6 +6,9 @@ export const TEN_BI = BigInt.fromI32(10)
 export const HALF_WAD_BI = BigInt.fromString("500000000000000000")
 export const ONE_WAD_BI = BigInt.fromString("1000000000000000000")
 
+// index of the last bucket (the contracts' MAX_FENWICK_INDEX)
+export const MAX_BUCKET_INDEX_BI = BigInt.fromI32(7388)
+
 export const ZERO_BD = BigDecimal.zero()
 export const EXP_18_BD = BigDecimal.fromString("1000000000000000000")
 

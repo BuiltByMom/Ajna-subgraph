@@ -71,7 +71,7 @@ The entity that records an event (`AddQuoteToken`, `DrawDebt` and so on) keeps t
 
 Some values are added up from events instead, because the contract changes them by exactly an event's amount and nowhere else:
 
-- on the pool: `txCount`, the flashloan totals, `interestUpdateFailures`, `pledgedCollateral`, `lenderCollateral` and `totalAjnaBurned`. `loansCount` follows the loans' status.
+- on the pool: `txCount`, the flashloan totals, `interestUpdateFailures`, `pledgedCollateral`, `lenderCollateral` and `totalAjnaBurned`. `loansCount` follows the loans' status. The two collateral totals are tested against the contracts: see [Event totals](#event-totals).
 - surplus auctions: every `SurplusAuction`.
 - the exit queue: a bucket's `queueHead`, `queueTail`, `escrowQuote` and `escrowCollateral`, and every `ExitQueuePlace`. These are right after each event, not only at the end of the block.
 - LP allowances.
@@ -166,6 +166,29 @@ yarn configure <network>
 ```
 
 The script runs `forge build` in the checkout, so it needs Foundry and `jq`. `yarn configure` then fails if an ABI has an event without a handler in the manifest, or the manifest names an event the ABI no longer has. An event whose signature changed stops matching without any error at indexing time, so fix every mismatch it reports before deploying.
+
+## Event totals
+
+`Pool.pledgedCollateral` and `Pool.lenderCollateral` are added up from five events and never read from chain:
+
+| Event | `pledgedCollateral` | `lenderCollateral` |
+| --- | --- | --- |
+| `DrawDebt` | plus `collateralPledged` | |
+| `RepayDebt` | minus `collateralPulled` | |
+| `LoanCalled` | minus `lenderCollateral`, `callerCollateral` and `surplusCollateral` | plus `lenderCollateral` |
+| `AddCollateral` | | plus `amount` |
+| `RemoveCollateral` | | minus `amount` |
+
+That is right only if the pool changes its own two totals by exactly those amounts and nowhere else. `contract-checks/SubgraphReplayInvariants.t.sol` tests it in the contracts' Foundry suite. It drives a pool through every call that touches collateral, including loan calls, loan moves, claims from exit escrow and collateral surplus auctions, with random arguments. After each call it replays the call's events with the rules above and requires both totals to equal the pool's `pledgedCollateral()` and `lenderCollateral()`.
+
+```
+./scripts/check-event-totals.sh <path to an ajna-v3 checkout at the commit in abis/ajna-v3.lock.json>
+```
+
+The script needs Foundry and `jq`, and runs the test for several quote and collateral token precisions. CI does not run it. Run it:
+
+- after moving the ABIs to another commit
+- after changing how the mappings compute either total. The test holds its own copy of the rules, so change both.
 
 ## Known issues
 

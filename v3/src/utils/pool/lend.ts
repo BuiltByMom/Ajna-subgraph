@@ -1,4 +1,4 @@
-import { Address, BigInt, Bytes, ethereum, store } from "@graphprotocol/graph-ts"
+import { Address, BigInt, Bytes, ethereum, log, store } from "@graphprotocol/graph-ts"
 
 import { Bucket, Lend, Pool } from "../../../generated/schema"
 import { ERC20Pool } from "../../../generated/templates/ERC20Pool/ERC20Pool"
@@ -19,12 +19,30 @@ export function getLendId(bucketId: Bytes, lender: Bytes): Bytes {
 // The position is read from chain rather than worked out from the event: a marked lender's
 // removals are claims from escrow that follow different arithmetic, and TransferLP does not say
 // how much LP moved in each bucket.
+//
+// If the reader contract cannot be read (see updateBucket), the Lend is left as it is: one that
+// does not exist yet is not created, and the next event that names the lender in the bucket
+// catches up.
 export function updateLend(pool: Pool, bucket: Bucket, lender: Address, block: ethereum.Block): void {
   const poolAddress = Address.fromBytes(pool.id)
   const index = BigInt.fromI32(bucket.bucketIndex)
   const lendId = getLendId(bucket.id, lender)
 
-  const position = PoolInfoUtils.bind(poolDeployment(pool).poolInfoUtils).lenderPosition(poolAddress, index, lender)
+  const positionCall = PoolInfoUtils.bind(poolDeployment(pool).poolInfoUtils).try_lenderPosition(
+    poolAddress,
+    index,
+    lender
+  )
+  if (positionCall.reverted) {
+    log.warning("updateLend: could not read lender {} in bucket {} of pool {} at block {}; keeping the Lend as it is", [
+      lender.toHexString(),
+      bucket.bucketIndex.toString(),
+      pool.id.toHexString(),
+      block.number.toString()
+    ])
+    return
+  }
+  const position = positionCall.value
   const lp = position.getLp_()
   let lend = Lend.load(lendId)
   if (lp.equals(ZERO_BI)) {

@@ -30,8 +30,13 @@ import { Token, TokenWithNDecimals } from '../../utils/Tokens.sol';
  *       Every pool call goes through `_exec`, which records the call's logs and replays them only if the call
  *       succeeded: forge's recorded logs include those of a call that reverted.
  *
- *       Run by scripts/check-event-totals.sh in that repository. With `SG_TRACE=true`, every case reached is
- *       appended to the file named by `SG_TRACE_FILE` (`sg-trace.log` in the checkout), to count what a run covered.
+ *       The totals are checked inside the handler call that made the pool call, so a mismatch reverts that call.
+ *       The invariant campaign must therefore run with `fail_on_revert` on: with it off, forge discards the
+ *       reverted call and the campaign passes whatever the totals are.
+ *
+ *       Run by scripts/check-event-totals.sh in that repository, which sets `fail_on_revert`. With `SG_TRACE=true`,
+ *       every case reached is appended to the file named by `SG_TRACE_FILE` (`sg-trace.log` in the checkout), to
+ *       count what a run covered.
  */
 contract SubgraphReplayHandler is Test {
 

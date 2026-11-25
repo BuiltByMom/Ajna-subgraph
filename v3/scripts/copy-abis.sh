@@ -11,6 +11,12 @@ set -euo pipefail
 CONTRACTS=(ERC20Pool ERC20PoolFactory PoolInfoUtils PoolInfoUtilsMulticall PositionManager)
 REPOSITORY="https://github.com/ajna-finance/ajna-v3"
 
+# a relative checkout path is relative to where the script was run from, not to this package
+CHECKOUT="${1:-}"
+if [ "$CHECKOUT" != "--check" ] && [ -d "$CHECKOUT" ]; then
+  CHECKOUT="$(cd "$CHECKOUT" && pwd)"
+fi
+
 cd "$(dirname "$0")/.."
 LOCK="abis/ajna-v3.lock.json"
 
@@ -43,12 +49,15 @@ check() {
   echo "abis/ matches ajna-v3 $(jq -r '.commit' "$LOCK")"
 }
 
-if [ "${1:-}" = "--check" ]; then
+if [ "$CHECKOUT" = "--check" ]; then
   check
   exit 0
 fi
 
-CHECKOUT="${1:?usage: copy-abis.sh <ajna-v3 checkout> | --check}"
+if [ -z "$CHECKOUT" ]; then
+  echo "usage: copy-abis.sh <ajna-v3 checkout> | --check" >&2
+  exit 1
+fi
 if [ ! -f "${CHECKOUT}/src/ERC20Pool.sol" ]; then
   echo "${CHECKOUT} is not an ajna-v3 checkout" >&2
   exit 1
@@ -62,13 +71,16 @@ fi
 # rebuild so the artifacts cannot be left over from another commit
 (cd "$CHECKOUT" && forge build src)
 
-for contract in "${CONTRACTS[@]}"; do
-  jq '.abi' "${CHECKOUT}/forge_out/${contract}.sol/${contract}.json" > "abis/${contract}.json"
-done
+# Build every ABI and the lock aside, and replace abis/ only once all of it is ready: a contract
+# that is missing from the checkout must not leave some ABIs from the new commit and the rest,
+# and the lock, from the old one.
+staging=$(mktemp -d)
+trap 'rm -rf "$staging"' EXIT
 
 hashes='{}'
 for contract in "${CONTRACTS[@]}"; do
-  hashes=$(jq --arg file "${contract}.json" --arg hash "$(sha256 "abis/${contract}.json")" \
+  jq -e '.abi' "${CHECKOUT}/forge_out/${contract}.sol/${contract}.json" > "${staging}/${contract}.json"
+  hashes=$(jq --arg file "${contract}.json" --arg hash "$(sha256 "${staging}/${contract}.json")" \
     '. + {($file): $hash}' <<< "$hashes")
 done
 
@@ -78,6 +90,11 @@ jq -n \
   --arg commit "$(git -C "$CHECKOUT" rev-parse HEAD)" \
   --arg srcTree "$(git -C "$CHECKOUT" rev-parse HEAD:src)" \
   --argjson abis "$hashes" \
-  '{repository: $repository, commit: $commit, srcTree: $srcTree, abis: $abis}' > "$LOCK"
+  '{repository: $repository, commit: $commit, srcTree: $srcTree, abis: $abis}' > "${staging}/lock.json"
+
+for contract in "${CONTRACTS[@]}"; do
+  mv "${staging}/${contract}.json" "abis/${contract}.json"
+done
+mv "${staging}/lock.json" "$LOCK"
 
 check

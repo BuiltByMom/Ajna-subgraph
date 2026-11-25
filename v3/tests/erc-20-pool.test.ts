@@ -46,7 +46,9 @@ import {
   LenderState,
   PoolSnapshot,
   mockBucketInfo,
+  mockBucketInfoReverts,
   mockLender,
+  mockLenderReverts,
   mockLoanTerm,
   mockPoolSnapshot,
   mockPoolSnapshotReverts,
@@ -456,6 +458,60 @@ describe("ERC20Pool lender events", () => {
     assert.fieldEquals("Pool", POOL.toHexString(), "updatedAtBlockNumber", "103")
   })
 
+  test("records an event whose bucket and lend cannot be read, and catches up at the next event", () => {
+    // A deposit in a block where PoolInfoUtils has no code yet: every read of it fails. Stopping
+    // here would leave the subgraph unable to get past the block.
+    const snapshot = new PoolSnapshot()
+    snapshot.poolSize = wad(1000)
+    mockPool(snapshot)
+    mockBucketInfoReverts(deployment().poolInfoUtils, POOL, INDEX, wad(0))
+    mockLenderReverts(deployment().poolInfoUtils, POOL, INDEX, LENDER)
+    const event = createAddQuoteTokenEvent(POOL, 101, 0, LENDER, INDEX, wad(1000), wad(1000))
+    handleAddQuoteToken(event)
+
+    // the event is recorded and counted, and points at a bucket that says it has not been read
+    assert.fieldEquals("AddQuoteToken", eventEntityId(event), "bucket", bucketId(POOL, INDEX))
+    assert.fieldEquals("AddQuoteToken", eventEntityId(event), "amount", "1000")
+    assert.fieldEquals("Pool", POOL.toHexString(), "txCount", "1")
+    assert.fieldEquals("Account", LENDER.toHexString(), "txCount", "1")
+    assert.fieldEquals("Bucket", bucketId(POOL, INDEX), "bucketIndex", "2550")
+    assert.fieldEquals("Bucket", bucketId(POOL, INDEX), "updatedAtBlockNumber", "0")
+    assert.fieldEquals("Bucket", bucketId(POOL, INDEX), "bucketPrice", "0")
+    assert.fieldEquals("Bucket", bucketId(POOL, INDEX), "deposit", "0")
+    assert.fieldEquals("Bucket", bucketId(POOL, INDEX), "exchangeRate", "0")
+    // the lender's position is not known yet
+    assert.entityCount("Lend", 0)
+
+    // the reader is deployed, and the lender's next action brings both up to date
+    mockBucket(INDEX, quoteBucket(wad(1500), wad(1500)))
+    mockLenderIn(INDEX, LENDER, unmarkedLender(wad(1500), wad(1500), blockTimestamp(102)))
+    handleAddQuoteToken(createAddQuoteTokenEvent(POOL, 102, 0, LENDER, INDEX, wad(500), wad(500)))
+
+    assert.fieldEquals("Bucket", bucketId(POOL, INDEX), "bucketPrice", "100")
+    assert.fieldEquals("Bucket", bucketId(POOL, INDEX), "deposit", "1500")
+    assert.fieldEquals("Bucket", bucketId(POOL, INDEX), "exchangeRate", "1")
+    assert.fieldEquals("Bucket", bucketId(POOL, INDEX), "updatedAtBlockNumber", "102")
+    assert.fieldEquals("Lend", lendId(POOL, INDEX, LENDER), "lpb", "1500")
+  })
+
+  test("keeps a bucket and a lend as they were while they cannot be read, apart from the bucket's t0 debt", () => {
+    depositQuote(wad(1000), 101)
+
+    // a later block in which the reader does not answer; debt has been drawn from the bucket
+    mockBucketInfoReverts(deployment().poolInfoUtils, POOL, INDEX, wad(400))
+    mockLenderReverts(deployment().poolInfoUtils, POOL, INDEX, LENDER)
+    handleRemoveQuoteToken(createRemoveQuoteTokenEvent(POOL, 102, 0, LENDER, INDEX, wad(100), wad(100)))
+
+    assert.fieldEquals("Bucket", bucketId(POOL, INDEX), "deposit", "1000")
+    assert.fieldEquals("Bucket", bucketId(POOL, INDEX), "bucketPrice", "100")
+    assert.fieldEquals("Bucket", bucketId(POOL, INDEX), "updatedAtBlockNumber", "101")
+    // read from the pool itself, so it still follows
+    assert.fieldEquals("Bucket", bucketId(POOL, INDEX), "t0debt", "400")
+    assert.fieldEquals("Lend", lendId(POOL, INDEX, LENDER), "lpb", "1000")
+    assert.fieldEquals("Lend", lendId(POOL, INDEX, LENDER), "updatedAtBlockNumber", "101")
+    assert.entityCount("RemoveQuoteToken", 1)
+  })
+
   test("reads each pool through the readers of its own factory", () => {
     const deployments = allDeployments()
 
@@ -546,6 +602,29 @@ describe("ERC20Pool LP events", () => {
     assert.notInStore("LPAllowance", allowanceId(LENDER, OTHER_LENDER, INDEX))
     assert.notInStore("LPAllowance", allowanceId(LENDER, OTHER_LENDER, OTHER_INDEX))
     assert.entityCount("LPAllowance", 0)
+
+    // the allowance was the owner's call. The transfer is counted for the pool alone: the event
+    // does not say who made it.
+    assert.fieldEquals("Pool", POOL.toHexString(), "txCount", "3")
+    assert.fieldEquals("Account", LENDER.toHexString(), "txCount", "2")
+  })
+
+  test("a TransferLP that moved no LP reads no bucket and no lender", () => {
+    // The owner holds no LP in any of the buckets named. Nothing is mocked for them: a transfer
+    // can name thousands of buckets, and reading each would be several calls apiece.
+    handleIncreaseLPAllowance(
+      createIncreaseLPAllowanceEvent(POOL, 101, 0, LENDER, OTHER_LENDER, [INDEX, OTHER_INDEX], [wad(10), wad(5)])
+    )
+    const event = createTransferLPEvent(POOL, 102, 0, LENDER, OTHER_LENDER, [INDEX, OTHER_INDEX], wad(0))
+    handleTransferLP(event)
+
+    assert.fieldEquals("TransferLP", eventEntityId(event), "indexes", "[2550, 2600]")
+    assert.fieldEquals("TransferLP", eventEntityId(event), "lp", "0")
+    assert.entityCount("Bucket", 0)
+    assert.entityCount("Lend", 0)
+    // the pool still deleted the allowances it was called with
+    assert.entityCount("LPAllowance", 0)
+    assert.fieldEquals("Pool", POOL.toHexString(), "txCount", "2")
   })
 
   test("LP allowances follow increases, decreases and revocations", () => {
@@ -578,7 +657,10 @@ describe("ERC20Pool LP events", () => {
     handleRevokeLPAllowance(createRevokeLPAllowanceEvent(POOL, 104, 0, LENDER, OTHER_LENDER, [INDEX, OTHER_INDEX]))
     assert.entityCount("LPAllowance", 0)
 
+    // each call counts for the pool and for the owner who made it, not for the spender
     assert.fieldEquals("Pool", POOL.toHexString(), "txCount", "4")
+    assert.fieldEquals("Account", LENDER.toHexString(), "txCount", "4")
+    assert.notInStore("Account", OTHER_LENDER.toHexString())
   })
 
   test("keeps the allowances of different spenders and lenders apart", () => {
@@ -692,6 +774,9 @@ describe("ERC20Pool LP events", () => {
     handleRevokeLPTransferors(createRevokeLPTransferorsEvent(POOL, 104, 0, LENDER, [second]))
     assert.notInStore("LPTransferorList", listId)
 
+    // each call counts for the pool and for the lender who made it, not for the transferors
+    assert.fieldEquals("Account", LENDER.toHexString(), "txCount", "4")
+    assert.notInStore("Account", first.toHexString())
     assert.fieldEquals("Pool", POOL.toHexString(), "txCount", "4")
   })
 })

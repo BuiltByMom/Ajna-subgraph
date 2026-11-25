@@ -606,11 +606,12 @@ describe("PositionManager LP", () => {
     assert.entityCount("LPAllowance", 0)
 
     // The pool counts its own calls: two transfers in, an allowance and a transfer out. The
-    // owners' accounts count their mints, memorializes and the redeem.
+    // owners' accounts count their mints, memorializes and the redeem, and the manager's account
+    // the allowance it gave: in the pool, the manager is the lender who made that call.
     assert.fieldEquals("Pool", POOL.toHexString(), "txCount", "4")
     assert.fieldEquals("Account", LENDER.toHexString(), "txCount", "3")
     assert.fieldEquals("Account", OTHER_LENDER.toHexString(), "txCount", "2")
-    assert.fieldEquals("Account", manager().toHexString(), "txCount", "0")
+    assert.fieldEquals("Account", manager().toHexString(), "txCount", "1")
   })
 
   test("a position minted, filled, emptied and burned in one block leaves nothing behind", () => {

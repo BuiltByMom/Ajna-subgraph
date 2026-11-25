@@ -25,15 +25,17 @@ DEPTH="${DEPTH:-100}"
 QUOTE_DECIMALS="${QUOTE_DECIMALS:-6 18}"
 COLLATERAL_DECIMALS="${COLLATERAL_DECIMALS:-0 6 8 18}"
 
-cd "$(dirname "$0")/.."
-LOCK="abis/ajna-v3.lock.json"
-TEST="contract-checks/SubgraphReplayInvariants.t.sol"
-
 CHECKOUT="${1:?usage: check-event-totals.sh <ajna-v3 checkout>}"
 if [ ! -f "${CHECKOUT}/src/ERC20Pool.sol" ]; then
   echo "${CHECKOUT} is not an ajna-v3 checkout" >&2
   exit 1
 fi
+# a relative path is relative to where the script was run from, not to this package
+CHECKOUT="$(cd "$CHECKOUT" && pwd)"
+
+cd "$(dirname "$0")/.."
+LOCK="abis/ajna-v3.lock.json"
+TEST="contract-checks/SubgraphReplayInvariants.t.sol"
 
 # the result says something about this subgraph only if these are the contracts its ABIs came from
 expected=$(jq -r '.srcTree' "$LOCK")
@@ -56,10 +58,14 @@ failed=0
 for quote in $QUOTE_DECIMALS; do
   for collateral in $COLLATERAL_DECIMALS; do
     printf 'quote %2s decimals, collateral %2s decimals: ' "$quote" "$collateral"
-    # forge exits 0 when no test matches, so a pass must also name both tests
+    # The handler checks the totals inside the call that changed them, and a failed check reverts
+    # that call. Without fail_on_revert forge would discard the call and report a pass, so it is
+    # set here whatever the checkout's own config says.
+    # forge exits 0 when no test matches, so a pass must also name both tests.
     if (cd "$CHECKOUT" && \
         QUOTE_PRECISION="$quote" COLLATERAL_PRECISION="$collateral" \
         FOUNDRY_PROFILE=invariant FOUNDRY_INVARIANT_RUNS="$RUNS" FOUNDRY_INVARIANT_DEPTH="$DEPTH" \
+        FOUNDRY_INVARIANT_FAIL_ON_REVERT=true \
         forge test --mc SubgraphReplayInvariants) > "$log" 2>&1 \
       && grep -q '^\[PASS\] invariant_subgraph_collateral_totals' "$log" \
       && grep -q '^\[PASS\] test_subgraph_replay_reaches_every_rule' "$log"; then

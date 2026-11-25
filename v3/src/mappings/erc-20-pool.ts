@@ -283,42 +283,45 @@ export function handleExitQueueFunded(event: ExitQueueFundedEvent): void {
 /*** LP Management Event Handlers  ***/
 /*************************************/
 
-export function handleApproveLPTransferors(event: ApproveLPTransferorsEvent): void {
-  const pool = loadPool(event.address)
+// Counts a call that sets who may receive a lender's LP against the pool and that lender, who is
+// always the caller. Nothing the pool is read for changes, so the pool is not refreshed.
+function recordLPManagement(pool: Pool, lender: Address): void {
   countPoolAction(pool)
   pool.save()
+  incrementAccountTxCount(lender)
+}
+
+export function handleApproveLPTransferors(event: ApproveLPTransferorsEvent): void {
+  const pool = loadPool(event.address)
+  recordLPManagement(pool, event.params.lender)
 
   approveTransferors(pool.id, event.params.lender, event.params.transferors)
 }
 
 export function handleRevokeLPTransferors(event: RevokeLPTransferorsEvent): void {
   const pool = loadPool(event.address)
-  countPoolAction(pool)
-  pool.save()
+  recordLPManagement(pool, event.params.lender)
 
   revokeTransferors(pool.id, event.params.lender, event.params.transferors)
 }
 
 export function handleIncreaseLPAllowance(event: IncreaseLPAllowanceEvent): void {
   const pool = loadPool(event.address)
-  countPoolAction(pool)
-  pool.save()
+  recordLPManagement(pool, event.params.owner)
 
   increaseAllowances(pool.id, event.params.owner, event.params.spender, event.params.indexes, event.params.amounts)
 }
 
 export function handleDecreaseLPAllowance(event: DecreaseLPAllowanceEvent): void {
   const pool = loadPool(event.address)
-  countPoolAction(pool)
-  pool.save()
+  recordLPManagement(pool, event.params.owner)
 
   decreaseAllowances(pool.id, event.params.owner, event.params.spender, event.params.indexes, event.params.amounts)
 }
 
 export function handleRevokeLPAllowance(event: RevokeLPAllowanceEvent): void {
   const pool = loadPool(event.address)
-  countPoolAction(pool)
-  pool.save()
+  recordLPManagement(pool, event.params.owner)
 
   clearAllowances(pool.id, event.params.owner, event.params.spender, event.params.indexes)
 }
@@ -326,16 +329,23 @@ export function handleRevokeLPAllowance(event: RevokeLPAllowanceEvent): void {
 // The event gives the total LP transferred but not how much moved in each bucket, and it lists
 // buckets where the owner had no LP. Each bucket is refreshed along with both lenders'
 // positions in it. A transfer does not change pool totals, so the pool is not refreshed.
+//
+// The transfer counts as an action on the pool but for neither lender's account: the call is
+// made by the new owner or a transferor they approved, and the event does not say which.
 export function handleTransferLP(event: TransferLPEvent): void {
   const pool = loadPool(event.address)
   countPoolAction(pool)
   pool.save()
 
+  // A transfer can name any number of buckets, and each one refreshed costs several contract
+  // reads. When no LP moved at all, no bucket or position changed and none is read.
   const indexes = event.params.indexes
-  for (let i = 0; i < indexes.length; i++) {
-    const bucket = updateBucket(pool, indexes[i].toI32(), event.block)
-    updateLend(pool, bucket, event.params.owner, event.block)
-    updateLend(pool, bucket, event.params.newOwner, event.block)
+  if (!event.params.lp.isZero()) {
+    for (let i = 0; i < indexes.length; i++) {
+      const bucket = updateBucket(pool, indexes[i].toI32(), event.block)
+      updateLend(pool, bucket, event.params.owner, event.block)
+      updateLend(pool, bucket, event.params.newOwner, event.block)
+    }
   }
 
   // the pool deletes the owner's allowance to the new owner in every bucket named, with no event

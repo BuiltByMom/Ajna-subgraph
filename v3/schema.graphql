@@ -138,7 +138,9 @@ type Bucket @entity {
   escrowCollateral: BigDecimal!  # collateral escrowed for funded places, not yet claimed
   exitQueuePlaces: [ExitQueuePlace!]! @derivedFrom(field: "bucket")
 
-  # block at which the fields above the exit queue were read
+  # Block at which the fields above the exit queue were read. 0 if the reader contract could not
+  # be read yet: price, deposit, collateral, lpb and exchangeRate are then 0 as well. t0debt alone
+  # is read at every event.
   updatedAtBlockNumber: BigInt!
   updatedAtTimestamp: BigInt!
 }
@@ -241,8 +243,8 @@ type Account @entity {
   loans: [Loan!]! @derivedFrom(field: "account")
   exitQueuePlaces: [ExitQueuePlace!]! @derivedFrom(field: "account")
   positions: [Position!]! @derivedFrom(field: "account")
-  # the account's actions as a lender, kicker or taker, and actions on its loans and positions
-  # whoever performed them
+  # The account's actions as a lender, kicker or taker, and actions on its loans and positions
+  # whoever performed them. A TransferLP is not counted: the event does not say who made the call.
   txCount: BigInt!
 }
 

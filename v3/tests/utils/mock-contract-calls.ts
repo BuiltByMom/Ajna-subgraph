@@ -163,11 +163,7 @@ export class BucketState {
 }
 
 export function mockBucketInfo(poolInfoUtils: Address, pool: Address, index: i32, bucket: BucketState): void {
-  createMockedFunction(
-    poolInfoUtils,
-    "bucketInfo",
-    "bucketInfo(address,uint256):(uint256,uint256,uint256,uint256,uint256)"
-  )
+  createMockedFunction(poolInfoUtils, "bucketInfo", BUCKET_INFO_SIGNATURE)
     .withArgs([ethereum.Value.fromAddress(pool), indexValue(index)])
     .returns([
       uintValue(bucket.price),
@@ -180,6 +176,28 @@ export function mockBucketInfo(poolInfoUtils: Address, pool: Address, index: i32
   createMockedFunction(pool, "bucketT0Debt", "bucketT0Debt(uint256):(uint256)")
     .withArgs([indexValue(index)])
     .returns([uintValue(bucket.t0debt)])
+}
+
+const BUCKET_INFO_SIGNATURE = "bucketInfo(address,uint256):(uint256,uint256,uint256,uint256,uint256)"
+const LENDER_POSITION_SIGNATURE = "lenderPosition(address,uint256,address):(uint256,bool,uint256,uint256,uint256)"
+
+// PoolInfoUtils not answering for a bucket, as in a block before the contract was deployed. The
+// bucket's t0 debt is read from the pool itself, and stays readable.
+export function mockBucketInfoReverts(poolInfoUtils: Address, pool: Address, index: i32, t0debt: BigInt): void {
+  createMockedFunction(poolInfoUtils, "bucketInfo", BUCKET_INFO_SIGNATURE)
+    .withArgs([ethereum.Value.fromAddress(pool), indexValue(index)])
+    .reverts()
+
+  createMockedFunction(pool, "bucketT0Debt", "bucketT0Debt(uint256):(uint256)")
+    .withArgs([indexValue(index)])
+    .returns([uintValue(t0debt)])
+}
+
+// PoolInfoUtils not answering for a lender in a bucket
+export function mockLenderReverts(poolInfoUtils: Address, pool: Address, index: i32, lender: Address): void {
+  createMockedFunction(poolInfoUtils, "lenderPosition", LENDER_POSITION_SIGNATURE)
+    .withArgs([ethereum.Value.fromAddress(pool), indexValue(index), ethereum.Value.fromAddress(lender)])
+    .reverts()
 }
 
 // What the pool holds for a lender in one bucket: PoolInfoUtils.lenderPosition and the pool's lenderInfo.
@@ -228,11 +246,7 @@ export function mockLender(
   lender: Address,
   state: LenderState
 ): void {
-  createMockedFunction(
-    poolInfoUtils,
-    "lenderPosition",
-    "lenderPosition(address,uint256,address):(uint256,bool,uint256,uint256,uint256)"
-  )
+  createMockedFunction(poolInfoUtils, "lenderPosition", LENDER_POSITION_SIGNATURE)
     .withArgs([ethereum.Value.fromAddress(pool), indexValue(index), ethereum.Value.fromAddress(lender)])
     .returns([
       uintValue(state.lp),

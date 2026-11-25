@@ -1,5 +1,7 @@
-// Finds and decodes the events of a chain built by integration/scenario.js: every log the
-// factories, pools and PositionManagers emitted, in the order the chain emitted them.
+// Finds and decodes the events of the deployments a scenario describes: every log the factories,
+// pools and PositionManagers emitted, in the order the chain emitted them. The scenario is the
+// one integration/scenario.js wrote for the local chain, or one that integration/reconcile.js
+// puts together for a real network.
 const { interfaceOf, loadAbi, plain } = require("./chain")
 
 const SOURCES = {
@@ -26,7 +28,12 @@ async function decodedEvents(chain, scenario) {
   })
   for (const address of Object.values(scenario.pools)) emitters[address] = { kind: "pool" }
 
-  const logs = await chain.logs(Object.keys(emitters), 0, scenario.headBlock)
+  // in ranges a public endpoint accepts
+  const logs = []
+  const step = Number(process.env.LOG_RANGE || 5000)
+  for (let from = scenario.startBlock || 0; from <= scenario.headBlock; from += step) {
+    logs.push(...(await chain.logs(Object.keys(emitters), from, Math.min(from + step - 1, scenario.headBlock))))
+  }
   logs.sort((a, b) => Number(a.blockNumber) - Number(b.blockNumber) || Number(a.logIndex) - Number(b.logIndex))
 
   return logs.map((entry) => {

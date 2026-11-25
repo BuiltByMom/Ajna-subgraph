@@ -44,8 +44,11 @@ services:
       CHAIN: "${CHAIN_NETWORK:-anvil}:${CHAIN_RPC:-http://host.docker.internal:8545}"
       GRAPH_LOG: info
   ipfs:
-    # the image has its own health check
+    # The image has its own health check. The daemon runs offline: by default it would join the
+    # public IPFS network and offer every file of a deployed subgraph to it. graph-node only
+    # needs the node's API.
     image: ipfs/kubo:v0.43.2
+    command: ["daemon", "--migrate=true", "--offline"]
     ports:
       - "5001:5001"
   postgres:

@@ -72,19 +72,25 @@ class Chain {
     this.clock = null
   }
 
+  // A public endpoint that limits how fast it is called is waited for and asked again.
   async rpc(method, params = []) {
-    const response = await fetch(this.url, {
-      method: "POST",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify({ jsonrpc: "2.0", id: this.nextId++, method, params })
-    })
-    const body = await response.json()
-    if (body.error) {
+    for (let attempt = 0; ; attempt++) {
+      const response = await fetch(this.url, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ jsonrpc: "2.0", id: this.nextId++, method, params })
+      })
+      const limited = (message) => /rate limit|too many requests/i.test(message)
+      const body = response.status === 429 ? { error: { message: "too many requests" } } : await response.json()
+      if (!body.error) return body.result
+      if (limited(body.error.message || "") && attempt < 10) {
+        await new Promise((resolve) => setTimeout(resolve, 250 * 2 ** Math.min(attempt, 5)))
+        continue
+      }
       const error = new Error(`${method}: ${body.error.message}`)
       error.data = body.error.data
       throw error
     }
-    return body.result
   }
 
   // Many requests in one round trip: [{ method, params }]. Returns one { result } or { error }

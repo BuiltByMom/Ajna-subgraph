@@ -1,12 +1,16 @@
 #!/usr/bin/env node
-// Compares a subgraph that a graph-node has synced over the local chain with the chain itself.
+// Compares a subgraph that a graph-node has synced with the chain it indexed.
 //
-//   node integration/reconcile.js <subgraph query URL>
+//   node integration/reconcile.js <subgraph query URL>                  the local chain
+//   node integration/reconcile.js <subgraph query URL> <config file>    a real network
 //
-// for example http://localhost:8000/subgraphs/name/ajna-v3. It needs the chain that
-// scripts/local-chain.sh start built still running, and integration/.out/scenario.json.
+// The URL is, for example, http://localhost:8000/subgraphs/name/ajna-v3. For the local chain it
+// needs the node that scripts/local-chain.sh start left running, and integration/.out/scenario.json.
+// For a real network it needs the config the subgraph was rendered from (config/<network>.json)
+// and RPC_URL, an endpoint that serves state back to the factories' start blocks.
 //
-// It makes two kinds of check against the entities the graph-node serves at the scenario's last block:
+// It makes two kinds of check against the entities the graph-node serves, at the scenario's last
+// block or, for a real network, at the last block the subgraph has indexed:
 //
 //   - those of integration/expected.js, which the recorded Matchstick test makes too: which
 //     entities exist, how many events were recorded, and every field that must equal the
@@ -27,6 +31,7 @@ const { decimal, expectations } = require("./expected")
 const OUT = path.join(__dirname, ".out")
 
 const POOL = interfaceOf("ERC20Pool")
+const FACTORY = interfaceOf("ERC20PoolFactory")
 const INFO = interfaceOf("PoolInfoUtils")
 const MANAGER = interfaceOf("PositionManager")
 const BALANCE = new Interface(["function balanceOf(address) view returns (uint256)"])
@@ -75,14 +80,45 @@ function normalized(value) {
 
 async function main() {
   const url = process.argv[2]
-  if (!url) throw new Error("usage: reconcile.js <subgraph query URL>")
-  const scenario = JSON.parse(fs.readFileSync(path.join(OUT, "scenario.json"), "utf8"))
-  const chain = new Chain(process.env.RPC_URL || scenario.rpcUrl)
-  const head = scenario.headBlock
+  const configFile = process.argv[3]
+  if (!url) throw new Error("usage: reconcile.js <subgraph query URL> [config file]")
 
   const meta = (await graphql(url, `{ _meta { block { number } hasIndexingErrors } }`))._meta
   if (meta.hasIndexingErrors) throw new Error("the subgraph has indexing errors")
-  if (meta.block.number < head) throw new Error(`the subgraph is at block ${meta.block.number}; the scenario ends at ${head}`)
+
+  let scenario
+  let chain
+  if (configFile) {
+    // a real network: its deployments from the config, its pools from the factories, and
+    // everything compared at the last block the subgraph has indexed
+    if (!process.env.RPC_URL) throw new Error("set RPC_URL to an endpoint of the network the subgraph indexes")
+    chain = new Chain(process.env.RPC_URL)
+    const config = JSON.parse(fs.readFileSync(configFile, "utf8"))
+    const lower = (address) => address.toLowerCase()
+    scenario = {
+      headBlock: meta.block.number,
+      startBlock: Math.min(...config.deployments.map((deployment) => deployment.factory.startBlock)),
+      deployments: config.deployments.map((deployment) => ({
+        factory: { address: lower(deployment.factory.address) },
+        positionManager: { address: lower(deployment.positionManager.address) },
+        poolInfoUtils: lower(deployment.poolInfoUtils),
+        poolInfoUtilsMulticall: lower(deployment.poolInfoUtilsMulticall)
+      })),
+      pools: {}
+    }
+    for (const deployment of scenario.deployments) {
+      const factory = { address: deployment.factory.address, iface: FACTORY }
+      const [deployed] = await chain.call(factory, "getDeployedPoolsList", [], scenario.headBlock)
+      for (const pool of deployed) scenario.pools[lower(pool)] = lower(pool)
+    }
+  } else {
+    scenario = JSON.parse(fs.readFileSync(path.join(OUT, "scenario.json"), "utf8"))
+    chain = new Chain(process.env.RPC_URL || scenario.rpcUrl)
+    if (meta.block.number < scenario.headBlock) {
+      throw new Error(`the subgraph is at block ${meta.block.number}; the scenario ends at ${scenario.headBlock}`)
+    }
+  }
+  const head = scenario.headBlock
 
   // how the graph-node names each entity's queries, and which of its fields are references
   const schema = (

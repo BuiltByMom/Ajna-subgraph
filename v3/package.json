@@ -10,7 +10,8 @@
     "abis:check": "./scripts/copy-abis.sh --check",
     "chain:start": "./scripts/local-chain.sh start",
     "chain:record": "./scripts/local-chain.sh record",
-    "chain:stop": "./scripts/local-chain.sh stop"
+    "chain:stop": "./scripts/local-chain.sh stop",
+    "reconcile": "node integration/reconcile.js"
   },
   "dependencies": {
     "@graphprotocol/graph-cli": "0.56",

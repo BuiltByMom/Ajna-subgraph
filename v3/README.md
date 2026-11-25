@@ -2,9 +2,11 @@
 
 Subgraph for the Ajna v3 contracts ([ajna-finance/ajna-v3](https://github.com/ajna-finance/ajna-v3)). It is a separate package from the v2 subgraph in the repository root: it has its own manifest, schema, ABIs, mappings and tests, and shares no code with it.
 
+If you query the v2 subgraph today, [MIGRATING.md](./MIGRATING.md) says what changes.
+
 ## Status
 
-In progress. The subgraph indexes:
+The subgraph indexes:
 
 - pool factories, pools and their tokens
 - buckets and lenders' positions in them (`AddQuoteToken`, `MoveQuoteToken`, `RemoveQuoteToken`, `AddCollateral`, `RemoveCollateral`)
@@ -15,7 +17,12 @@ In progress. The subgraph indexes:
 - flashloans, interest rate changes and interest update failures
 - PositionManager positions and the LP they hold in each bucket (`Mint`, `MemorializePosition`, `MoveLiquidity`, `RedeemPosition`, `Burn`), with the NFT's transfers and approvals
 
-Every event of the pool factory, the pool and the PositionManager is handled. The subgraph has been indexed by graph-node v0.45.0 over a local chain of real contract events, and what it served matched the chain: see [Integration](#integration). It has not been deployed against a public network.
+Every event of the pool factory, the pool and the PositionManager is handled. graph-node v0.45.0 has indexed the subgraph twice, and both times what it served matched the chain:
+
+- over a local chain that drives the contracts through every event: see [Integration](#integration)
+- over the Sepolia deployment in `config/sepolia.json`, which by then had three deposits and two loans: see [Deploying](#deploying)
+
+Both ran on a graph-node on a development machine. The subgraph is not hosted anywhere yet.
 
 ## Setup
 
@@ -188,6 +195,49 @@ The v2 subgraph's Ajna token, grant fund and burn wrapper entities are not part 
 | `Mint`, `Burn`, `MemorializePosition`, `RedeemPosition`, `MoveLiquidity`, `Approval`, `ApprovalForAll` | Add `positionManager`. `Burn` and `Approval` add `pool`, and `Burn` adds `owner`. `MoveLiquidity` adds `from`, `to`, `lpRedeemedFrom` and `lpAwardedTo`. `MemorializePosition.indexes` includes buckets where nothing was memorialized. |
 | `Transfer` | Adds `positionManager`. `token` is gone. Only transfers between holders are stored: v2 also stored the transfer of a mint and of a burn. |
 
+## Deploying
+
+To a graph-node that indexes the network, with its admin and IPFS endpoints:
+
+```
+yarn configure <network>
+yarn codegen
+yarn build
+yarn graph create --node <admin URL> ajna-v3
+yarn graph deploy --node <admin URL> --ipfs <IPFS URL> ajna-v3
+```
+
+- **The graph-node's network name** must be the `network` in `config/<network>.json`.
+- **The endpoint must be an archive node.** Every handler reads the contracts at the block of its event. An endpoint that has pruned that block's state answers with an error, not a revert, and graph-node retries the read for ever: the subgraph stays healthy and never advances. A public Sepolia endpoint that keeps about 10,000 blocks of state did exactly that at the pool's first event.
+- **Check the result against the chain:**
+
+  ```
+  RPC_URL=<archive endpoint> node integration/reconcile.js <subgraph query URL> config/<network>.json
+  ```
+
+  This makes the checks described under [A graph-node](#a-graph-node), at the last block the subgraph has indexed. On Sepolia, after three deposits and two loans, 120 final-state checks and 61 refreshed fields agreed.
+
+To try a network on a local graph-node first, start the one in `integration/docker-compose.yml` pointed at it, then deploy as above with `http://localhost:8020` and `http://localhost:5001`:
+
+```
+CHAIN_NETWORK=<network> CHAIN_RPC=<archive endpoint> ./scripts/local-graph-node.sh up
+```
+
+### Contract reads
+
+Indexing costs one `eth_call` for each contract read, and reads decide how fast the subgraph syncs. Over the local chain's 175 events graph-node made 411, about 2.3 an event:
+
+| Reads | Share | Made |
+| --- | --- | --- |
+| A pool's totals, rates, balances and surplus | 37% | three reads, once a block for each pool with an event |
+| A bucket | 30% | two reads, once a block for each bucket an event names |
+| A lender's position in a bucket | 20% | one or two reads for each lender an event names |
+| A loan | 6% | one read, once a block for each loan an event names |
+| A position's LP in a bucket | 3% | one read for each bucket a position event names |
+| Tokens and loan terms | 3% | once each |
+
+Nothing is read twice in a block, and a `TransferLP` that moved no LP reads nothing. The next step, if syncing a busy network proves slow, is to declare these reads in the manifest so that graph-node makes them in parallel before the handler runs. That needs a newer `specVersion` and graph-cli than this package pins, and a pool template for each factory, because a declared read's contract address is fixed in the manifest and each factory has its own readers.
+
 ## ABIs
 
 `abis/` holds the ABIs of the five Ajna contracts the subgraph reads. `abis/ajna-v3.lock.json` records the ajna-v3 commit they were built from. `abis/tokens/` holds two small hand-written ABIs for reading a token's name, symbol and decimals. To move the Ajna ABIs to another commit:
@@ -273,6 +323,8 @@ Matchstick does not check everything a graph-node does: that each data source li
 - for every `Pool`, `Bucket`, `Lend`, `Loan` and `PositionLend`, the fields read from the contracts, against the chain at the block the entity says it was refreshed in. These drift between events, so the recorded test cannot check them. Where the contracts offer another way to a value than the reader the mappings use, that way is taken: a token's `balanceOf` for a pool's balances, the pool's own `bucketInfo` for a bucket.
 
 `deploy` leaves the package configured for the local chain. Run `yarn configure <network>` and `yarn codegen` again before building for a real network or running the tests.
+
+The IPFS node runs offline. By default it would join the public IPFS network and offer the files of every subgraph deployed to it.
 
 CI does not run this: it needs Docker, Foundry and the contract repository.
 

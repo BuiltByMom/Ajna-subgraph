@@ -15,7 +15,7 @@ In progress. The subgraph indexes:
 - flashloans, interest rate changes and interest update failures
 - PositionManager positions and the LP they hold in each bucket (`Mint`, `MemorializePosition`, `MoveLiquidity`, `RedeemPosition`, `Burn`), with the NFT's transfers and approvals
 
-Every event of the pool factory, the pool and the PositionManager is handled. The mappings have run over a chain of real contract events, in a recorded test: see [Integration](#integration). The subgraph has not yet been run against a graph-node.
+Every event of the pool factory, the pool and the PositionManager is handled. The subgraph has been indexed by graph-node v0.45.0 over a local chain of real contract events, and what it served matched the chain: see [Integration](#integration). It has not been deployed against a public network.
 
 ## Setup
 
@@ -224,7 +224,7 @@ The script needs Foundry and `jq`, and runs the test for several quote and colla
 
 ## Integration
 
-The unit tests mock every contract read with values written by hand. Two things check the mappings against the contracts themselves, and a third is waiting for a graph-node.
+The unit tests mock every contract read with values written by hand. Three things check the subgraph against the contracts themselves: a local chain, a recording of it that runs with the unit tests, and a graph-node indexing it.
 
 ### A local chain
 
@@ -256,14 +256,41 @@ The recording is committed and runs with the other tests. Record it again after 
 
 ### A graph-node
 
-Not done yet. Matchstick does not check everything a graph-node does: that each data source lists the ABIs its handlers call, that the schema loads, or how entities are stored and queried. To run it:
+Matchstick does not check everything a graph-node does: that each data source lists the ABIs its handlers call, that the schema loads, or how entities are stored and queried. `scripts/local-graph-node.sh` runs graph-node v0.45.0 with the IPFS node and the Postgres it needs in Docker (`integration/docker-compose.yml`), deploys the subgraph, and compares what it serves with the chain:
 
-1. `./scripts/local-chain.sh start <ajna-v3 checkout>`, which leaves the node running and writes `integration/.out/local.json`
-2. `yarn configure integration/.out/local.json`, then `yarn codegen` and `yarn build`
-3. deploy the build to a graph-node whose `anvil` network points at the node
-4. `node integration/reconcile.js <subgraph query URL>`
+```
+./scripts/local-chain.sh start <ajna-v3 checkout>
+./scripts/local-graph-node.sh up
+./scripts/local-graph-node.sh deploy
+./scripts/local-graph-node.sh reconcile
+./scripts/local-graph-node.sh down
+./scripts/local-chain.sh stop
+```
 
-`integration/reconcile.js` makes the recorded test's checks against what the graph-node serves. It has not been run against a graph-node. It does not yet compare the fields that drift between events, such as a bucket's deposit, with the chain at the block each entity was refreshed in.
+`deploy` renders the subgraph for the local chain, builds it, deploys it and waits until it has indexed every block, failing if indexing does. `reconcile` (`integration/reconcile.js`) then makes two kinds of check:
+
+- the recorded test's checks of the chain's final state, against the entities the graph-node serves
+- for every `Pool`, `Bucket`, `Lend`, `Loan` and `PositionLend`, the fields read from the contracts, against the chain at the block the entity says it was refreshed in. These drift between events, so the recorded test cannot check them. Where the contracts offer another way to a value than the reader the mappings use, that way is taken: a token's `balanceOf` for a pool's balances, the pool's own `bucketInfo` for a bucket.
+
+`deploy` leaves the package configured for the local chain. Run `yarn configure <network>` and `yarn codegen` again before building for a real network or running the tests.
+
+CI does not run this: it needs Docker, Foundry and the contract repository.
+
+#### Docker in a Lima VM
+
+On a Mac without Docker Desktop, [Lima](https://lima-vm.io) can run the Docker engine in a VM:
+
+```
+limactl start --name=ajna-graph --mount-none --rosetta template://docker
+export DOCKER_HOST=unix://$HOME/.lima/ajna-graph/sock/docker.sock
+export CHAIN_RPC=http://192.168.5.2:8545
+```
+
+- `--rosetta` is needed on Apple silicon: the graph-node image is published for amd64 only.
+- `--mount-none` keeps the VM from seeing the Mac's files. Nothing here needs them.
+- `192.168.5.2` is the Mac as a Lima VM sees it, where the local chain listens.
+
+`limactl stop ajna-graph` stops the VM, and `limactl delete ajna-graph` removes it.
 
 ## Known issues
 

@@ -6,22 +6,41 @@
 // for example http://localhost:8000/subgraphs/name/ajna-v3. It needs the chain that
 // scripts/local-chain.sh start built still running, and integration/.out/scenario.json.
 //
-// It makes the checks of integration/expected.js, the ones the recorded Matchstick test makes,
-// against the entities the graph-node serves at the scenario's last block: which entities exist,
-// how many events were recorded, and every field that must equal the chain's final state.
+// It makes two kinds of check against the entities the graph-node serves at the scenario's last block:
 //
-// NOT YET RUN AGAINST A GRAPH-NODE. The checks themselves pass against the mappings in the
-// recorded test; the code below that queries a graph-node has never met one. It also does not
-// yet read the chain at the block each Pool, Bucket and Lend says it was refreshed in, to
-// compare the fields that drift between events.
+//   - those of integration/expected.js, which the recorded Matchstick test makes too: which
+//     entities exist, how many events were recorded, and every field that must equal the
+//     chain's final state
+//   - for every Pool, Bucket, Lend, Loan and PositionLend, the fields read from the contracts,
+//     against the chain at the block the entity says it was refreshed in. These drift between
+//     events, so the recorded test cannot check them. Where the contracts offer another way to
+//     the same value than the reader the mappings use, that way is taken.
 const fs = require("fs")
 const path = require("path")
 
-const { Chain } = require("./chain")
+const { Interface } = require("@ethersproject/abi")
+
+const { Chain, interfaceOf } = require("./chain")
 const { decodedEvents } = require("./events")
-const { expectations } = require("./expected")
+const { decimal, expectations } = require("./expected")
 
 const OUT = path.join(__dirname, ".out")
+
+const POOL = interfaceOf("ERC20Pool")
+const INFO = interfaceOf("PoolInfoUtils")
+const MANAGER = interfaceOf("PositionManager")
+const BALANCE = new Interface(["function balanceOf(address) view returns (uint256)"])
+const WAD = 10n ** 18n
+const LENDER_SHARE = (96n * WAD) / 100n
+
+// the contracts' rounding multiplication of two WADs
+const wmul = (a, b) => (a * b + WAD / 2n) / WAD
+
+// a decimal string as an integer of 40 decimals, to compare products that have more than 18
+function scaled(text) {
+  const [whole, fraction = ""] = text.split(".")
+  return BigInt(whole + fraction.padEnd(40, "0").slice(0, 40))
+}
 
 async function graphql(url, query) {
   const response = await fetch(url, {
@@ -129,8 +148,157 @@ async function main() {
     }
   }
 
+  const finalFailures = failures.length
+  console.log(`${checks.length - finalFailures} of ${checks.length} checks agree with the chain at block ${head}`)
+
+  /***************************************************/
+  /*** Fields read from the contracts, when refreshed ***/
+  /***************************************************/
+
+  let refreshed = 0
+  let unread = 0
+  const same = (what, actual, expected) => {
+    refreshed += 1
+    if (normalized(actual) !== String(expected)) failures.push(`${what}: ${normalized(actual)}, expected ${expected}`)
+  }
+  const all = async (entity, selection) => {
+    const items = []
+    for (let skip = 0; ; skip += 1000) {
+      const page = (await graphql(url, `{ ${plural[entity]}(first: 1000, skip: ${skip}, ${at}) { ${selection} } }`))[plural[entity]]
+      items.push(...page)
+      if (page.length < 1000) return items
+    }
+  }
+  const deploymentOf = {}
+  const infoOf = (pool) => ({ address: deploymentOf[pool].poolInfoUtils, iface: INFO })
+  const poolAt = (pool) => ({ address: pool, iface: POOL })
+
+  const pools = await all(
+    "Pool",
+    `id updatedAtBlockNumber factory { id } quoteToken { id decimals } collateralToken { id decimals }
+     poolSize debt inflator borrowRate rateAtTarget utilization lendRate quoteTokenBalance collateralBalance
+     escrowedQuote availableQuote quoteSurplus quoteSurplusClaimable quoteSurplusLotRemaining
+     collateralSurplus collateralSurplusClaimable collateralSurplusLotRemaining`
+  )
+  for (const pool of pools) {
+    deploymentOf[pool.id] = scenario.deployments.find((deployment) => deployment.factory.address === pool.factory.id)
+    const block = Number(pool.updatedAtBlockNumber)
+    if (block === 0) {
+      unread += 1
+      continue
+    }
+    const what = (name) => `Pool ${pool.id} ${name} at block ${block}`
+    const info = infoOf(pool.id)
+    const [poolSize, inflator] = await chain.call(info, "poolLoansInfo", [pool.id], block)
+    const [rate, , rateAtTarget] = await chain.call(poolAt(pool.id), "interestState", [], block)
+    const [utilization] = await chain.call(poolAt(pool.id), "utilization", [], block)
+    const [debt] = await chain.call(poolAt(pool.id), "debtInfo", [], block)
+    const [escrowed] = await chain.call(poolAt(pool.id), "escrowedQuote", [], block)
+    const [available] = await chain.call(info, "availableQuoteTokenAmount", [pool.id], block)
+    const quoteSurplus = await chain.call(info, "poolQuoteSurplusInfo", [pool.id], block)
+    const collateralSurplus = await chain.call(info, "poolCollateralSurplusInfo", [pool.id], block)
+    const balance = async (token) =>
+      (await chain.call({ address: token.id, iface: BALANCE }, "balanceOf", [pool.id], block))[0] * 10n ** BigInt(18 - token.decimals)
+
+    same(what("poolSize"), pool.poolSize, decimal(poolSize))
+    same(what("inflator"), pool.inflator, decimal(inflator))
+    same(what("debt"), pool.debt, decimal(debt))
+    same(what("borrowRate"), pool.borrowRate, decimal(rate))
+    same(what("rateAtTarget"), pool.rateAtTarget, decimal(rateAtTarget))
+    same(what("utilization"), pool.utilization, decimal(utilization))
+    same(what("lendRate"), pool.lendRate, decimal(wmul(wmul(rate, LENDER_SHARE), utilization)))
+    same(what("quoteTokenBalance"), pool.quoteTokenBalance, decimal(await balance(pool.quoteToken)))
+    same(what("collateralBalance"), pool.collateralBalance, decimal(await balance(pool.collateralToken)))
+    same(what("escrowedQuote"), pool.escrowedQuote, decimal(escrowed))
+    same(what("availableQuote"), pool.availableQuote, decimal(available))
+    same(what("quoteSurplus"), pool.quoteSurplus, decimal(quoteSurplus[0]))
+    same(what("quoteSurplusClaimable"), pool.quoteSurplusClaimable, decimal(quoteSurplus[1]))
+    same(what("quoteSurplusLotRemaining"), pool.quoteSurplusLotRemaining, decimal(quoteSurplus[2]))
+    same(what("collateralSurplus"), pool.collateralSurplus, decimal(collateralSurplus[0]))
+    same(what("collateralSurplusClaimable"), pool.collateralSurplusClaimable, decimal(collateralSurplus[1]))
+    same(what("collateralSurplusLotRemaining"), pool.collateralSurplusLotRemaining, decimal(collateralSurplus[2]))
+  }
+
+  for (const bucket of await all("Bucket", `id pool { id } bucketIndex updatedAtBlockNumber bucketPrice deposit collateral lpb exchangeRate`)) {
+    const block = Number(bucket.updatedAtBlockNumber)
+    if (block === 0) {
+      unread += 1
+      continue
+    }
+    const what = (name) => `Bucket ${bucket.bucketIndex} of ${bucket.pool.id} ${name} at block ${block}`
+    const [price, , , , exchangeRate] = await chain.call(infoOf(bucket.pool.id), "bucketInfo", [bucket.pool.id, bucket.bucketIndex], block)
+    // the pool's own view of the bucket, not the reader's
+    const [lp, collateral, deposit] = await chain.call(poolAt(bucket.pool.id), "bucketInfo", [bucket.bucketIndex], block)
+    same(what("bucketPrice"), bucket.bucketPrice, decimal(price))
+    same(what("deposit"), bucket.deposit, decimal(deposit))
+    same(what("collateral"), bucket.collateral, decimal(collateral))
+    same(what("lpb"), bucket.lpb, decimal(lp))
+    same(what("exchangeRate"), bucket.exchangeRate, decimal(exchangeRate))
+  }
+
+  for (const lend of await all("Lend", `id pool { id } bucketIndex lender updatedAtBlockNumber lpb lpbValueInQuote depositTime marked liveLpb fundedValueInQuote`)) {
+    const block = Number(lend.updatedAtBlockNumber)
+    const what = (name) => `Lend of ${lend.lender} in bucket ${lend.bucketIndex} of ${lend.pool.id} ${name} at block ${block}`
+    const [lp, marked, liveLp, liveWorth, fundedWorth] = await chain.call(
+      infoOf(lend.pool.id),
+      "lenderPosition",
+      [lend.pool.id, lend.bucketIndex, lend.lender],
+      block
+    )
+    const [poolLp, depositTime] = await chain.call(poolAt(lend.pool.id), "lenderInfo", [lend.bucketIndex, lend.lender], block)
+    same(what("lpb"), lend.lpb, decimal(poolLp))
+    same(what("lpb, by the reader"), lend.lpb, decimal(lp))
+    same(what("marked"), lend.marked, marked)
+    same(what("liveLpb"), lend.liveLpb, decimal(liveLp))
+    same(what("lpbValueInQuote"), lend.lpbValueInQuote, decimal(liveWorth + fundedWorth))
+    same(what("fundedValueInQuote"), lend.fundedValueInQuote, decimal(fundedWorth))
+    same(what("depositTime"), lend.depositTime, depositTime)
+  }
+
+  for (const loan of await all("Loan", `id pool { id } loanId status updatedAtBlockNumber t0debt collateralPledged t0Tp thresholdPrice`)) {
+    const block = Number(loan.updatedAtBlockNumber)
+    if (block === 0) {
+      unread += 1
+      continue
+    }
+    const what = (name) => `Loan ${loan.loanId} of ${loan.pool.id} ${name} at block ${block}`
+    const [, t0Debt, collateral, t0Tp] = await chain.call(poolAt(loan.pool.id), "loanDetails", [loan.loanId], block)
+    same(what("t0debt"), loan.t0debt, decimal(t0Debt))
+    same(what("collateralPledged"), loan.collateralPledged, decimal(collateral))
+    same(what("t0Tp"), loan.t0Tp, decimal(t0Tp))
+    // t0Tp at the pool's inflator: a product of two 18-decimal numbers, of which a BigDecimal keeps 34 digits
+    const [, inflator] = await chain.call(infoOf(loan.pool.id), "poolLoansInfo", [loan.pool.id], block)
+    const product = t0Tp * inflator * 10n ** 4n
+    const difference = scaled(loan.thresholdPrice) - product
+    refreshed += 1
+    if ((difference < 0n ? -difference : difference) * 10n ** 30n > product) {
+      // written out in full: the exact product has more digits than `decimal` allows a BigDecimal
+      const digits = product.toString().padStart(41, "0")
+      failures.push(`${what("thresholdPrice")}: ${loan.thresholdPrice}, expected ${digits.slice(0, -40)}.${digits.slice(-40)}`)
+    }
+  }
+
+  for (const lend of await all(
+    "PositionLend",
+    `id pool { id } bucketIndex updatedAtBlockNumber lpb lpbValueInQuote depositTime position { tokenId positionManager { id } }`
+  )) {
+    const block = Number(lend.updatedAtBlockNumber)
+    const manager = { address: lend.position.positionManager.id, iface: MANAGER }
+    const what = (name) => `PositionLend of token ${lend.position.tokenId} in bucket ${lend.bucketIndex} ${name} at block ${block}`
+    const [lp, depositTime] = await chain.call(manager, "getPositionInfo", [lend.position.tokenId, lend.bucketIndex], block)
+    const [, deposit, collateral, , exchangeRate] = await chain.call(infoOf(lend.pool.id), "bucketInfo", [lend.pool.id, lend.bucketIndex], block)
+    same(what("lpb"), lend.lpb, decimal(lp))
+    same(what("depositTime"), lend.depositTime, depositTime)
+    // LP at the bucket's exchange rate, rounded down; nothing for a bucket that holds nothing
+    const worth = deposit === 0n && collateral === 0n ? 0n : (lp * exchangeRate) / WAD
+    same(what("lpbValueInQuote"), lend.lpbValueInQuote, decimal(worth))
+  }
+
   for (const failure of failures) console.error(failure)
-  console.log(`${checks.length - failures.length} of ${checks.length} checks agree with the chain at block ${head}`)
+  console.log(
+    `${refreshed - (failures.length - finalFailures)} of ${refreshed} refreshed fields agree with the chain at the block they were read in` +
+      (unread === 0 ? "" : ` (${unread} entities have not been read from the contracts yet)`)
+  )
   if (failures.length !== 0) process.exit(1)
 }
 

@@ -6,3 +6,6 @@ src/config/deployments.ts
 tests/.bin/
 tests/.latest.json
 tests/.docker/
+
+# written by integration/scenario.js
+integration/.out/

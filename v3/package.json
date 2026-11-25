@@ -7,13 +7,17 @@
     "codegen": "graph codegen",
     "build": "graph build",
     "test": "graph test -v 0.6.0",
-    "abis:check": "./scripts/copy-abis.sh --check"
+    "abis:check": "./scripts/copy-abis.sh --check",
+    "chain:start": "./scripts/local-chain.sh start",
+    "chain:record": "./scripts/local-chain.sh record",
+    "chain:stop": "./scripts/local-chain.sh stop"
   },
   "dependencies": {
     "@graphprotocol/graph-cli": "0.56",
     "@graphprotocol/graph-ts": "0.35.1"
   },
   "devDependencies": {
+    "@ethersproject/abi": "5.0.7",
     "matchstick-as": "0.6.0",
     "mustache": "^4.2.0",
     "yaml": "^2.3.4"

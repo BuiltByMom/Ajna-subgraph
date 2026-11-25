@@ -15,7 +15,7 @@ In progress. The subgraph indexes:
 - flashloans, interest rate changes and interest update failures
 - PositionManager positions and the LP they hold in each bucket (`Mint`, `MemorializePosition`, `MoveLiquidity`, `RedeemPosition`, `Burn`), with the NFT's transfers and approvals
 
-Every event of the pool factory, the pool and the PositionManager is handled. The subgraph has not yet been run against a graph-node.
+Every event of the pool factory, the pool and the PositionManager is handled. The mappings have run over a chain of real contract events, in a recorded test: see [Integration](#integration). The subgraph has not yet been run against a graph-node.
 
 ## Setup
 
@@ -29,7 +29,7 @@ yarn test
 
 `yarn configure <network>` reads `config/<network>.json` and writes `subgraph.yaml` and `src/config/deployments.ts`. Neither file is committed, so run it after cloning and whenever you switch networks. Run `yarn codegen` again afterwards.
 
-The tests run against whichever config was rendered last and cover every deployment in it. CI runs them with `tests/fixtures/two-factories.json`.
+The tests run against whichever config was rendered last and cover every deployment in it. CI runs them with `tests/fixtures/two-factories.json`. The recorded chain in `tests/recorded/` needs that fixture's two deployments, and skips itself under any other config.
 
 ## Deployments
 
@@ -221,6 +221,49 @@ The script needs Foundry and `jq`, and runs the test for several quote and colla
 
 - after moving the ABIs to another commit
 - after changing how the mappings compute either total. The test holds its own copy of the rules, so change both.
+
+## Integration
+
+The unit tests mock every contract read with values written by hand. Two things check the mappings against the contracts themselves, and a third is waiting for a graph-node.
+
+### A local chain
+
+`./scripts/local-chain.sh start <ajna-v3 checkout>` starts an anvil node, deploys the contracts from the checkout's build output and runs `integration/scenario.js`, which drives them through every event the subgraph handles. The checkout must be at the commit in `abis/ajna-v3.lock.json`. The scenario includes the cases the mappings were designed around:
+
+- two factories with different loan terms, each with its own PositionManager, and the same token pair under both
+- tokens of 6, 8 and 18 decimals
+- a deposit made before its factory's reader contracts are deployed
+- an exit queue place funded by a mark, a repayment, a loan move and a loan call, and claimed in collateral and in quote
+- loans repaid, redrawn on a debt-free loan's collateral, moved, improved, and called both with and without collateral to spare
+- a deposit and its withdrawal, a loan's whole life, and a position's whole life, each inside one transaction
+- both surplus auctions kicked in one transaction, a partial take, and a later kick that rolls the rest over
+- an LP allowance at an index that is not a bucket, and LP transfers that move nothing
+- a pool whose interest can no longer be accrued, which emits `InterestUpdateFailure`
+
+The node starts at a fixed time and the scenario fixes the time between blocks, so every run builds the same chain. The scenario fails if any event the subgraph has a handler for was not emitted.
+
+### The recorded chain
+
+`./scripts/local-chain.sh record <ajna-v3 checkout>` builds that chain and writes `tests/recorded/local-chain.test.ts`, a Matchstick test that needs no chain to run:
+
+- every event, in order, with its real block, timestamp, transaction hash and log index
+- every contract read a handler can make, mocked with what the chain returned at the end of the event's block, which is what a handler's read sees on a graph-node. A read that reverted, or whose contract had no code yet, reverts.
+- checks of the entities against the chain's final state, worked out by `integration/expected.js` from the chain's logs and the contracts' own getters, not from the mappings
+
+The checks cover what does not depend on when an entity was last refreshed: which entities exist, how many events were recorded, and the fields that change only through events naming the entity. That includes every value the subgraph adds up from events: the two collateral totals, the exit queue and its places, LP allowances and transferors, borrower delegates, surplus auctions and the AJNA they burned, loan status and the count of loans with debt, and positions with the LP they hold.
+
+The recording is committed and runs with the other tests. Record it again after changing the contracts' commit or the scenario; an unchanged chain produces the same file.
+
+### A graph-node
+
+Not done yet. Matchstick does not check everything a graph-node does: that each data source lists the ABIs its handlers call, that the schema loads, or how entities are stored and queried. To run it:
+
+1. `./scripts/local-chain.sh start <ajna-v3 checkout>`, which leaves the node running and writes `integration/.out/local.json`
+2. `yarn configure integration/.out/local.json`, then `yarn codegen` and `yarn build`
+3. deploy the build to a graph-node whose `anvil` network points at the node
+4. `node integration/reconcile.js <subgraph query URL>`
+
+`integration/reconcile.js` makes the recorded test's checks against what the graph-node serves. It has not been run against a graph-node. It does not yet compare the fields that drift between events, such as a bucket's deposit, with the chain at the block each entity was refreshed in.
 
 ## Known issues
 

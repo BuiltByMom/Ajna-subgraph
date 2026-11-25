@@ -4,29 +4,35 @@ on: [push]
 
 jobs:
   tests:
-    runs-on: ubuntu-latest
+    # `graph test` (graph-cli 0.56) downloads the Matchstick binary named for the runner's Ubuntu
+    # version, and Matchstick 0.6.0 is published for Ubuntu 22 only.
+    runs-on: ubuntu-22.04
     steps:
-      - uses: actions/checkout@v2
+      - uses: actions/checkout@v4
         with:
           submodules: recursive
 
-      - name: Use Node.js 16.x
-        uses: actions/setup-node@v1
+      # graph-cli's dependencies no longer install on Node 16
+      - name: Use Node.js 24.x
+        uses: actions/setup-node@v4
         with:
-          node-version: 16.x
+          node-version: 24.x
 
+      # The lockfile this package commits is bun.lock. Installing with yarn finds no lockfile and
+      # resolves every dependency afresh on each run.
       - name: Install Dependencies
         run: |
-          npm install -g yarn
-          yarn
+          npm install -g bun@1.3.14
+          bun install --frozen-lockfile
 
       - name: Build Subgraph
         run: |
-          yarn codegen
-          yarn build
+          bun run codegen
+          bun run build
 
+      # Without a version `graph test` asks GitHub for Matchstick's latest release on every run.
       - name: Run Tests
-        run: yarn test
+        run: bun run test -v 0.6.0
 
     timeout-minutes: 10
 

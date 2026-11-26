@@ -56,7 +56,8 @@ function read(key, abi, fn) {
 read("loanTerm", "ERC20PoolFactory", "loanTerm")
 read("name", "tokens/ERC20", "name")
 read("symbol", "tokens/ERC20", "symbol")
-read("decimals", "tokens/ERC20", "decimals")
+read("collateralScale", "ERC20Pool", "collateralScale")
+read("quoteTokenScale", "ERC20Pool", "quoteTokenScale")
 read("totalT0Debt", "ERC20Pool", "totalT0Debt")
 read("poolDetailsMulticall", "PoolInfoUtilsMulticall", "poolDetailsMulticall")
 read("poolBalanceDetails", "PoolInfoUtilsMulticall", "poolBalanceDetails")
@@ -210,7 +211,7 @@ async function main() {
     const list = []
     const add = (key, target, args) => list.push({ read: READS[key], target, args })
     for (const factory of known.factories) add("loanTerm", factory, [])
-    for (const token of known.tokens) for (const key of ["name", "symbol", "decimals"]) add(key, token, [])
+    for (const token of known.tokens) for (const key of ["name", "symbol"]) add(key, token, [])
 
     const pools = new Set()
     const bucketsOnly = new Set()
@@ -235,6 +236,9 @@ async function main() {
         }
       }
       if (!pools.has(address)) continue
+      // constants of the pool's deployment, which give its tokens their decimals
+      add("collateralScale", address, [])
+      add("quoteTokenScale", address, [])
       add("totalT0Debt", address, [])
       add("poolDetailsMulticall", deployment.poolInfoUtilsMulticall, [address])
       add("poolBalanceDetails", deployment.poolInfoUtilsMulticall, [address])

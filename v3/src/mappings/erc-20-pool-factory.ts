@@ -24,10 +24,10 @@ export function handlePoolCreated(event: PoolCreatedEvent): void {
   factory.save()
 
   // the factory does not deploy a pool whose collateral and quote are the same token
-  const collateralToken = loadOrCreateToken(event.params.collateral_)
+  const collateralToken = loadOrCreateToken(event.params.collateral_, event.params.pool_, false)
   collateralToken.poolCount = collateralToken.poolCount.plus(ONE_BI)
   collateralToken.save()
-  const quoteToken = loadOrCreateToken(event.params.quote_)
+  const quoteToken = loadOrCreateToken(event.params.quote_, event.params.pool_, true)
   quoteToken.poolCount = quoteToken.poolCount.plus(ONE_BI)
   quoteToken.save()
 

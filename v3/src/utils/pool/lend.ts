@@ -23,10 +23,15 @@ export function getLendId(bucketId: Bytes, lender: Bytes): Bytes {
 // If the reader contract cannot be read (see updateBucket), the Lend is left as it is: one that
 // does not exist yet is not created, and the next event that names the lender in the bucket
 // catches up.
+//
+// Like every contract read, this returns the state at the end of the event's block, so a Lend
+// already refreshed in this block is left as it is.
 export function updateLend(pool: Pool, bucket: Bucket, lender: Address, block: ethereum.Block): void {
   const poolAddress = Address.fromBytes(pool.id)
   const index = BigInt.fromI32(bucket.bucketIndex)
   const lendId = getLendId(bucket.id, lender)
+  let lend = Lend.load(lendId)
+  if (lend != null && lend.updatedAtBlockNumber.equals(block.number)) return
 
   const positionCall = PoolInfoUtils.bind(poolDeployment(pool).poolInfoUtils).try_lenderPosition(
     poolAddress,
@@ -44,7 +49,6 @@ export function updateLend(pool: Pool, bucket: Bucket, lender: Address, block: e
   }
   const position = positionCall.value
   const lp = position.getLp_()
-  let lend = Lend.load(lendId)
   if (lp.equals(ZERO_BI)) {
     if (lend != null) store.remove("Lend", lendId.toHexString())
     return

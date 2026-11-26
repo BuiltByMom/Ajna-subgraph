@@ -6,17 +6,20 @@
 # node indexed, and the next `up` starts from an empty database.
 #
 # CHAIN_RPC is the chain's JSON-RPC address as the graph-node container reaches it. The default
-# suits Docker Desktop and Docker on Linux. Where the containers run in a Lima VM, the Mac is
-# http://192.168.5.2:8545.
+# suits Docker Desktop. Where the containers run in a Lima VM, the Mac is http://192.168.5.2:8545.
+# For Docker Engine on Linux, see scripts/local-graph-node.sh.
+#
+# Every port is published on this machine only. graph-node's admin port deploys subgraphs for
+# whoever can reach it, and the IPFS API stores what it is sent.
 services:
   graph-node:
     # published for amd64 only: on Apple silicon the Docker VM needs Rosetta
     image: graphprotocol/graph-node:v0.45.0
     platform: linux/amd64
     ports:
-      - "8000:8000" # GraphQL queries
-      - "8020:8020" # admin: create and deploy
-      - "8030:8030" # indexing status
+      - "127.0.0.1:8000:8000" # GraphQL queries
+      - "127.0.0.1:8020:8020" # admin: create and deploy
+      - "127.0.0.1:8030:8030" # indexing status
     # The image's own start script waits for IPFS and Postgres with `nc`, which crashes under
     # Rosetta and leaves the script waiting four minutes for nothing. The health checks below do
     # the waiting instead, and graph-node is started directly.
@@ -50,7 +53,7 @@ services:
     image: ipfs/kubo:v0.43.2
     command: ["daemon", "--migrate=true", "--offline"]
     ports:
-      - "5001:5001"
+      - "127.0.0.1:5001:5001"
   postgres:
     image: postgres:16
     command: ["postgres", "-c", "shared_preload_libraries=pg_stat_statements"]

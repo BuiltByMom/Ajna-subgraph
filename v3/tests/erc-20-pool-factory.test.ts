@@ -3,17 +3,19 @@ import { BigInt } from "@graphprotocol/graph-ts"
 
 import { handlePoolCreated } from "../src/mappings/erc-20-pool-factory"
 import { allDeployments } from "../src/utils/deployments"
+import { MAX_TOKEN_TEXT_LENGTH, clipTokenText, decimalsOfScale } from "../src/utils/token-erc20"
 import { THIRTY_DAYS, blockTimestamp, eventEntityId, testAddress } from "./utils/common"
 import { createPool, createPoolCreatedEvent } from "./utils/erc-20-pool-factory-utils"
 import {
   PoolSnapshot,
   mockLoanTerm,
+  mockPoolScales,
   mockPoolSnapshot,
   mockPoolSnapshotReverts,
   mockPoolT0Debt,
   mockTokenBytes32Info,
   mockTokenBytes32InfoReverts,
-  mockTokenDecimals,
+  mockTokenDecimalsOutOfRange,
   mockTokenInfo,
   mockTokenStringsRevert
 } from "./utils/mock-contract-calls"
@@ -43,8 +45,9 @@ describe("handlePoolCreated", () => {
     const deployment = allDeployments()[0]
     const pool = testAddress(0x1000)
     mockLoanTerm(deployment.factory, THIRTY_DAYS)
-    mockTokenInfo(COLLATERAL, "Collateral Token", "COLL", 18)
-    mockTokenInfo(QUOTE, "Quote Token", "QUOTE", 6)
+    mockTokenInfo(COLLATERAL, "Collateral Token", "COLL")
+    mockTokenInfo(QUOTE, "Quote Token", "QUOTE")
+    mockPoolScales(pool, 18, 6)
     mockPoolSnapshot(deployment.poolInfoUtilsMulticall, pool, newPoolSnapshot())
 
     const event = createPoolCreatedEvent(deployment.factory, pool, COLLATERAL, QUOTE, CREATED_AT, 7)
@@ -99,8 +102,9 @@ describe("handlePoolCreated", () => {
       const snapshot = newPoolSnapshot()
       snapshot.poolSize = BigInt.fromI32(i + 1).times(BigInt.fromString("1000000000000000000"))
       mockLoanTerm(deployment.factory, THIRTY_DAYS.times(BigInt.fromI32(i + 1)))
-      mockTokenInfo(COLLATERAL, "Collateral Token", "COLL", 18)
-      mockTokenInfo(QUOTE, "Quote Token", "QUOTE", 18)
+      mockTokenInfo(COLLATERAL, "Collateral Token", "COLL")
+      mockTokenInfo(QUOTE, "Quote Token", "QUOTE")
+      mockPoolScales(pool, 18, 18)
       mockPoolSnapshot(deployment.poolInfoUtilsMulticall, pool, snapshot)
 
       handlePoolCreated(createPoolCreatedEvent(deployment.factory, pool, COLLATERAL, QUOTE, CREATED_AT, i))
@@ -122,11 +126,13 @@ describe("handlePoolCreated", () => {
   test("counts a second pool against the factory and the token the two pools share", () => {
     const deployment = allDeployments()[0]
     const otherCollateral = testAddress(0x7002)
-    mockTokenInfo(otherCollateral, "Other Collateral", "OTHER", 8)
+    mockTokenInfo(otherCollateral, "Other Collateral", "OTHER")
     createPool(deployment, testAddress(0x3000), COLLATERAL, QUOTE, newPoolSnapshot(), CREATED_AT)
 
-    // createPool mocks 18-decimal tokens, so create the second pool directly
+    // createPool mocks 18-decimal tokens, so create the second pool directly. Its quote scale says
+    // 6 decimals, which a token that already has an entity does not take on.
     const secondPool = testAddress(0x3001)
+    mockPoolScales(secondPool, 8, 6)
     mockPoolSnapshot(deployment.poolInfoUtilsMulticall, secondPool, newPoolSnapshot())
     handlePoolCreated(
       createPoolCreatedEvent(deployment.factory, secondPool, otherCollateral, QUOTE, CREATED_AT + 1, 0)
@@ -140,6 +146,7 @@ describe("handlePoolCreated", () => {
     assert.fieldEquals("Token", COLLATERAL.toHexString(), "poolCount", "1")
     assert.fieldEquals("Token", otherCollateral.toHexString(), "poolCount", "1")
     assert.fieldEquals("Token", otherCollateral.toHexString(), "decimals", "8")
+    assert.fieldEquals("Token", QUOTE.toHexString(), "decimals", "18")
   })
 
   test("reads a token name and symbol stored as bytes32", () => {
@@ -149,8 +156,8 @@ describe("handlePoolCreated", () => {
     mockLoanTerm(deployment.factory, THIRTY_DAYS)
     mockTokenStringsRevert(bytes32Token)
     mockTokenBytes32Info(bytes32Token, "Maker", "MKR")
-    mockTokenDecimals(bytes32Token, 18)
-    mockTokenInfo(QUOTE, "Quote Token", "QUOTE", 18)
+    mockTokenInfo(QUOTE, "Quote Token", "QUOTE")
+    mockPoolScales(pool, 18, 18)
     mockPoolSnapshot(deployment.poolInfoUtilsMulticall, pool, newPoolSnapshot())
 
     handlePoolCreated(createPoolCreatedEvent(deployment.factory, pool, bytes32Token, QUOTE, CREATED_AT, 0))
@@ -166,8 +173,8 @@ describe("handlePoolCreated", () => {
     mockLoanTerm(deployment.factory, THIRTY_DAYS)
     mockTokenStringsRevert(namelessToken)
     mockTokenBytes32InfoReverts(namelessToken)
-    mockTokenDecimals(namelessToken, 18)
-    mockTokenInfo(QUOTE, "Quote Token", "QUOTE", 18)
+    mockTokenInfo(QUOTE, "Quote Token", "QUOTE")
+    mockPoolScales(pool, 18, 18)
     mockPoolSnapshot(deployment.poolInfoUtilsMulticall, pool, newPoolSnapshot())
 
     handlePoolCreated(createPoolCreatedEvent(deployment.factory, pool, namelessToken, QUOTE, CREATED_AT, 0))
@@ -181,8 +188,9 @@ describe("handlePoolCreated", () => {
     const deployment = allDeployments()[0]
     const pool = testAddress(0x6000)
     mockLoanTerm(deployment.factory, THIRTY_DAYS)
-    mockTokenInfo(COLLATERAL, "Collateral Token", "COLL", 18)
-    mockTokenInfo(QUOTE, "Quote Token", "QUOTE", 18)
+    mockTokenInfo(COLLATERAL, "Collateral Token", "COLL")
+    mockTokenInfo(QUOTE, "Quote Token", "QUOTE")
+    mockPoolScales(pool, 18, 18)
     mockPoolSnapshotReverts(deployment.poolInfoUtilsMulticall, pool)
     mockPoolT0Debt(pool, BigInt.zero())
 
@@ -192,6 +200,92 @@ describe("handlePoolCreated", () => {
     // zero marks a pool that has never been read
     assert.fieldEquals("Pool", pool.toHexString(), "updatedAtBlockNumber", "0")
     assert.dataSourceExists("ERC20Pool", pool.toHexString())
+  })
+
+  // Anyone can deploy a pool for any token. What such a token answers must never stop the handler:
+  // a handler that aborts stops the subgraph for every pool.
+
+  test("takes a token's decimals from the pool, whatever the token itself answers", () => {
+    const deployment = allDeployments()[0]
+    const liar = testAddress(0x7005)
+    const sixDecimals = testAddress(0x7006)
+    const pool = testAddress(0x6100)
+    mockLoanTerm(deployment.factory, THIRTY_DAYS)
+    mockTokenInfo(liar, "Liar", "LIAR")
+    mockTokenInfo(sixDecimals, "Six", "SIX")
+    // both tokens now answer decimals() with 2^255; the pool was deployed when they said 0 and 6
+    mockTokenDecimalsOutOfRange(liar)
+    mockTokenDecimalsOutOfRange(sixDecimals)
+    mockPoolScales(pool, 0, 6)
+    mockPoolSnapshot(deployment.poolInfoUtilsMulticall, pool, newPoolSnapshot())
+
+    handlePoolCreated(createPoolCreatedEvent(deployment.factory, pool, liar, sixDecimals, CREATED_AT, 0))
+
+    assert.fieldEquals("Token", liar.toHexString(), "decimals", "0")
+    assert.fieldEquals("Token", sixDecimals.toHexString(), "decimals", "6")
+    assert.fieldEquals("Pool", pool.toHexString(), "collateralToken", liar.toHexString())
+    assert.dataSourceExists("ERC20Pool", pool.toHexString())
+  })
+
+  test("reads every scale the factory can give a pool as its decimals", () => {
+    for (let decimals = 0; decimals <= 18; decimals++) {
+      const scale = BigInt.fromI32(10).pow(<u8>(18 - decimals))
+      assert.i32Equals(decimals, decimalsOfScale(scale))
+    }
+  })
+
+  test("cuts a token's name and symbol to a length that is safe to keep", () => {
+    const deployment = allDeployments()[0]
+    const verbose = testAddress(0x7007)
+    const pool = testAddress(0x6200)
+    mockLoanTerm(deployment.factory, THIRTY_DAYS)
+    // a megabyte of name, and a symbol one character over the limit
+    mockTokenInfo(verbose, "N".repeat(1000000), "S".repeat(MAX_TOKEN_TEXT_LENGTH + 1))
+    mockTokenInfo(QUOTE, "Q".repeat(MAX_TOKEN_TEXT_LENGTH), "QUOTE")
+    mockPoolScales(pool, 18, 18)
+    mockPoolSnapshot(deployment.poolInfoUtilsMulticall, pool, newPoolSnapshot())
+
+    handlePoolCreated(createPoolCreatedEvent(deployment.factory, pool, verbose, QUOTE, CREATED_AT, 0))
+
+    assert.fieldEquals("Token", verbose.toHexString(), "name", "N".repeat(MAX_TOKEN_TEXT_LENGTH))
+    assert.fieldEquals("Token", verbose.toHexString(), "symbol", "S".repeat(MAX_TOKEN_TEXT_LENGTH))
+    // text of exactly the limit is kept whole
+    assert.fieldEquals("Token", QUOTE.toHexString(), "name", "Q".repeat(MAX_TOKEN_TEXT_LENGTH))
+    assert.fieldEquals("Token", QUOTE.toHexString(), "symbol", "QUOTE")
+  })
+
+  test("never cuts a character in half", () => {
+    // A rocket is two UTF-16 code units. Cut at the limit, the first would be left alone, which is
+    // not text and which the store refuses.
+    const rocket = "\u{1F680}"
+    assert.i32Equals(2, rocket.length)
+    assert.stringEquals(
+      "A".repeat(MAX_TOKEN_TEXT_LENGTH - 1),
+      clipTokenText("A".repeat(MAX_TOKEN_TEXT_LENGTH - 1) + rocket + "B")
+    )
+    // a rocket that ends exactly at the limit is whole, and stays
+    assert.stringEquals(
+      "A".repeat(MAX_TOKEN_TEXT_LENGTH - 2) + rocket,
+      clipTokenText("A".repeat(MAX_TOKEN_TEXT_LENGTH - 2) + rocket + "B")
+    )
+    // one that fits is untouched
+    assert.stringEquals("A" + rocket, clipTokenText("A" + rocket))
+  })
+
+  test("keeps a bytes32 name that fills all 32 bytes", () => {
+    const deployment = allDeployments()[0]
+    const bytes32Token = testAddress(0x7008)
+    const pool = testAddress(0x6300)
+    mockLoanTerm(deployment.factory, THIRTY_DAYS)
+    mockTokenStringsRevert(bytes32Token)
+    mockTokenBytes32Info(bytes32Token, "Thirty-two bytes of name exactly", "MKR")
+    mockTokenInfo(QUOTE, "Quote Token", "QUOTE")
+    mockPoolScales(pool, 18, 18)
+    mockPoolSnapshot(deployment.poolInfoUtilsMulticall, pool, newPoolSnapshot())
+
+    handlePoolCreated(createPoolCreatedEvent(deployment.factory, pool, bytes32Token, QUOTE, CREATED_AT, 0))
+
+    assert.fieldEquals("Token", bytes32Token.toHexString(), "name", "Thirty-two bytes of name exactly")
   })
 
   // A PoolCreated from a factory that is not configured ends in log.critical, which Matchstick

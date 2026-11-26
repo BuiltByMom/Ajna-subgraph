@@ -189,10 +189,18 @@ async function expectations(chain, scenario, events, alias) {
         pool.delegates.set(pairKey(args.borrower, delegate), { borrower: args.borrower.toLowerCase(), delegate: delegate.toLowerCase() })
       }
     } else if (name === "ApproveLPTransferors" || name === "RevokeLPTransferors") {
+      // The pool keeps a flag for each transferor, in no order. The list is kept here in the order
+      // the events give it: an approval adds to the end, a revocation takes out. Every transferor
+      // ever named is remembered, to check the result against the pool's flags below.
       const lender = args.lender.toLowerCase()
-      if (!pool.transferors.has(lender)) pool.transferors.set(lender, [])
-      for (const transferor of args.transferors) {
-        if (!pool.transferors.get(lender).includes(transferor.toLowerCase())) pool.transferors.get(lender).push(transferor.toLowerCase())
+      if (!pool.transferors.has(lender)) pool.transferors.set(lender, { approved: [], named: new Set() })
+      const { approved, named } = pool.transferors.get(lender)
+      for (const address of args.transferors) {
+        const transferor = address.toLowerCase()
+        named.add(transferor)
+        const position = approved.indexOf(transferor)
+        if (name === "ApproveLPTransferors" && position === -1) approved.push(transferor)
+        if (name === "RevokeLPTransferors" && position !== -1) approved.splice(position, 1)
       }
     } else if (name === "IncreaseLPAllowance" || name === "DecreaseLPAllowance" || name === "RevokeLPAllowance") {
       for (const index of args.indexes) allowance(args.owner, args.spender, index)
@@ -365,17 +373,19 @@ async function expectations(chain, scenario, events, alias) {
         absent("BorrowerDelegate", id)
       }
     }
-    for (const [lender, candidates] of pool.transferors) {
+    for (const [lender, { approved, named }] of pool.transferors) {
       const id = address + utf8("|") + lender.slice(2)
-      const approved = []
-      for (const transferor of candidates) {
-        if ((await read(address, POOL, "approvedTransferors", [lender, transferor]))[0]) approved.push(alias(transferor))
+      for (const transferor of named) {
+        const [flag] = await read(address, POOL, "approvedTransferors", [lender, transferor])
+        if (flag !== approved.includes(transferor)) {
+          throw new Error(`pool ${address}: the events and the pool disagree on whether ${lender} approves the transferor ${transferor}`)
+        }
       }
       if (approved.length === 0) {
         absent("LPTransferorList", id)
       } else {
         transferorListCount += 1
-        field("LPTransferorList", id, "transferors", `[${approved.join(", ")}]`)
+        field("LPTransferorList", id, "transferors", `[${approved.map(alias).join(", ")}]`)
       }
     }
     for (const { owner, spender, index } of pool.allowances.values()) {

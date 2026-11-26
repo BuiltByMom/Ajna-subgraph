@@ -12,6 +12,10 @@
 # events, so a value can be older than the block being queried. Debts are stored in t0 terms, which
 # do not change as interest accrues: multiply by the pool's current inflator for the debt owed.
 
+# A token is whatever contract a pool was deployed for, and may answer anything. Its name and
+# symbol are what it said in the block its first pool was created in, cut to 128 characters, or
+# "unknown" if it gave neither a string nor a bytes32. Its decimals are those it reported to the
+# factory, taken from that pool and not from the token: always 0 to 18.
 type Token @entity {
   id: Bytes!                # token address
   symbol: String!

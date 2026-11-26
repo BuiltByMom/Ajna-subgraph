@@ -5,7 +5,7 @@ import { PoolCreated } from "../../generated/ERC20PoolFactory/ERC20PoolFactory"
 import { handlePoolCreated } from "../../src/mappings/erc-20-pool-factory"
 import { Deployment } from "../../src/utils/deployments"
 import { THIRTY_DAYS, placeEvent } from "./common"
-import { PoolSnapshot, mockLoanTerm, mockPoolSnapshot, mockTokenInfo } from "./mock-contract-calls"
+import { PoolSnapshot, mockLoanTerm, mockPoolScales, mockPoolSnapshot, mockTokenInfo } from "./mock-contract-calls"
 
 export function createPoolCreatedEvent(
   factory: Address,
@@ -37,8 +37,9 @@ export function createPool(
   blockNumber: i32
 ): void {
   mockLoanTerm(deployment.factory, THIRTY_DAYS)
-  mockTokenInfo(collateral, "Collateral Token", "COLL", 18)
-  mockTokenInfo(quote, "Quote Token", "QUOTE", 18)
+  mockTokenInfo(collateral, "Collateral Token", "COLL")
+  mockTokenInfo(quote, "Quote Token", "QUOTE")
+  mockPoolScales(pool, 18, 18)
   mockPoolSnapshot(deployment.poolInfoUtilsMulticall, pool, snapshot)
 
   handlePoolCreated(createPoolCreatedEvent(deployment.factory, pool, collateral, quote, blockNumber, 0))

@@ -19,7 +19,7 @@ The subgraph indexes:
 
 Every event of the pool factory, the pool and the PositionManager is handled. graph-node v0.45.0 has indexed the subgraph twice, and both times what it served matched the chain:
 
-- over a local chain that drives the contracts through every event: see [Integration](#integration)
+- over a local chain that drives the contracts through every event, and then attacks the indexer with hostile tokens and arguments: see [Integration](#integration)
 - over the Sepolia deployment in `config/sepolia.json`, which by then had three deposits and two loans: see [Deploying](#deploying)
 
 Both ran on a graph-node on a development machine. The subgraph is not hosted anywhere yet.
@@ -99,6 +99,15 @@ Pools, buckets and lends are read through the `PoolInfoUtils` contracts. A read 
 
 Each catches up at the next event that names it. Loans and positions are read from the pool and the PositionManager themselves, and are not affected.
 
+### Tokens
+
+Anyone can deploy a pool for any token, so a token is a contract that may answer anything. A handler that aborts on an answer stops the subgraph, for every pool. So a `Token` holds:
+
+- **`decimals`**: those the token reported to the factory, worked out from the scale its first pool keeps for it. Always 0 to 18. The token itself is not asked: asked again, it can say something else, including a number too large to convert, which aborts the handler.
+- **`name` and `symbol`**: what the token answered in the block its first pool was created in, as a string or as a bytes32, cut to 128 characters. A token can return megabytes, which would be stored and served with every pool that names it. `unknown` if it gave neither.
+
+A token can also make the reader contracts revert for its own pool, by reverting on `balanceOf` for example. That pool is then one whose readers cannot be read, as above. No other pool is affected.
+
 ### Debt
 
 Debts are stored in t0 terms (`Pool.t0debt`, `Bucket.t0debt`, `Loan.t0debt`), which do not change as interest accrues. Multiply by the pool's current inflator for the debt owed. `Pool.debt` and `Pool.inflator` are the values at `updatedAtBlockNumber`.
@@ -152,7 +161,7 @@ A PositionManager issues NFTs that hold LP for their owners. Each pool factory h
 - **Approvals.** `Approval` and `ApprovalForAll` are recorded as events only. Who may manage a position now is not stored, because a transfer or a burn clears a position's approved address without an event: read `getApproved` and `isApprovedForAll` from the manager.
 - **Token URI.** Not stored. The manager builds it on chain from the owner and the pool's token symbols: read `tokenURI` from the manager.
 
-The pool emits its own events in the same calls, with the manager as the lender (`TransferLP`, `MoveQuoteToken`, `IncreaseLPAllowance`). `Pool.txCount` counts those, and the position events count for the owner's `Account.txCount`.
+The pool emits its own events in the same calls, with the manager as the lender (`TransferLP`, `MoveQuoteToken`, `IncreaseLPAllowance`). `Pool.txCount` counts those, and `Mint`, `MemorializePosition`, `MoveLiquidity`, `RedeemPosition` and `Burn` count for the owner's `Account.txCount`. A transfer or an approval of the token changes who holds or may use it and is not counted.
 
 ### Retention
 
@@ -166,8 +175,8 @@ The v2 subgraph's Ajna token, grant fund and burn wrapper entities are not part 
 | ------ | ------ |
 | `PoolFactory` | Adds `loanTerm` and the derived `positionManagers`. `pools` is derived. `poolType` and `txCount` are gone. |
 | `Pool` | Adds `factory`, `loanTerm`, `debt`, `rateAtTarget`, `utilization`, `escrowedQuote`, `availableQuote`, `lenderCollateral`, the six surplus fields, `interestUpdateFailures` and `updatedAt*`. `t0debt` now holds t0 debt (v2 stored the debt there). `loansCount` counts loans with debt. `reserveAuctions` is replaced by `surplusAuctions`, `quoteSurplusAuction` and `collateralSurplusAuction`. Prices (`hpb`, `htp`, `lup`), fees, reserves, burn epoch, bonds, liquidations, `totalInterestEarned`, `maxBorrower`, `minDebtAmount`, `actualUtilization`, `targetUtilization`, `poolType` and the ERC721 fields are gone. |
-| `Pool.txCount`, `Token.txCount`, `Account.txCount` | Count actions. `UpdateInterestRate`, `InterestUpdateFailure`, `LoanClosed`, `ImproveLoan` and `ExitQueueFunded` are emitted as part of another action and are not counted. An account's count covers its actions as a lender, kicker or taker, and every action on its loans and positions, including a call, a move or a burn by someone else. A lender's actions include setting LP allowances and transferors. `TransferLP` counts for the pool but for no account: the event names the two lenders, not the caller. Position events do not add to a pool's or a token's count: the pool's own events in the same call do. |
-| `Token` | `pools` is split into the derived `poolsAsCollateral` and `poolsAsQuote`. `tokenType` and `totalSupply` are gone. |
+| `Pool.txCount`, `Token.txCount`, `Account.txCount` | Count actions. `UpdateInterestRate`, `InterestUpdateFailure`, `LoanClosed`, `ImproveLoan` and `ExitQueueFunded` are emitted as part of another action and are not counted. An account's count covers its actions as a lender, kicker or taker, and every action on its loans and positions, including a call, a move or a burn by someone else, but not a position's transfers and approvals. A lender's actions include setting LP allowances and transferors. `TransferLP` counts for the pool but for no account: the event names the two lenders, not the caller. Position events do not add to a pool's or a token's count: the pool's own events in the same call do. |
+| `Token` | `pools` is split into the derived `poolsAsCollateral` and `poolsAsQuote`. `tokenType` and `totalSupply` are gone. `decimals` comes from the pool and is always 0 to 18; `name` and `symbol` are cut to 128 characters: see [Tokens](#tokens). |
 | `Bucket` | `lends` and `positionLends` are derived. Adds `t0debt`, `loans`, `queueHead`, `queueTail`, `escrowQuote`, `escrowCollateral`, `exitQueuePlaces` and `updatedAt*`. `deposit`, `collateral` and `lpb` exclude what the exit queue has moved to escrow. |
 | `Lend` | Adds `account`, `marked`, `liveLpb`, `fundedValueInQuote` and `updatedAt*`. `lpbValueInQuote` includes LP the exit queue has funded. |
 | `ExitQueuePlace` | New. |
@@ -231,10 +240,10 @@ Indexing costs one `eth_call` for each contract read, and reads decide how fast 
 | --- | --- | --- |
 | A pool's totals, rates, balances and surplus | 37% | three reads, once a block for each pool with an event |
 | A bucket | 30% | two reads, once a block for each bucket an event names |
-| A lender's position in a bucket | 20% | one or two reads for each lender an event names |
+| A lender's position in a bucket | 20% | one or two reads, once a block for each lender an event names |
 | A loan | 6% | one read, once a block for each loan an event names |
 | A position's LP in a bucket | 3% | one read for each bucket a position event names |
-| Tokens and loan terms | 3% | once each |
+| Tokens, their scales in the pool, and loan terms | 3% | once each |
 
 Nothing is read twice in a block, and a `TransferLP` that moved no LP reads nothing. The next step, if syncing a busy network proves slow, is to declare these reads in the manifest so that graph-node makes them in parallel before the handler runs. That needs a newer `specVersion` and graph-cli than this package pins, and a pool template for each factory, because a declared read's contract address is fixed in the manifest and each factory has its own readers.
 
@@ -292,6 +301,16 @@ The unit tests mock every contract read with values written by hand. Three thing
 
 The node starts at a fixed time and the scenario fixes the time between blocks, so every run builds the same chain. The scenario fails if any event the subgraph has a handler for was not emitted.
 
+`start` then runs `integration/hostile.js`, which does what a stranger could do to stop an indexer, for the price of a transaction each:
+
+- a token that answers `decimals()` with 2^255 once its pool exists, and one whose name, symbol and decimals cannot be read at all
+- a megabyte of name, and a symbol with a two-unit character where a careless cut would fall
+- a name and a symbol that are not text
+- a quote token whose `balanceOf` reverts from its pool's first deposit on
+- LP allowances at indexes far past the last bucket
+
+The token is `integration/hostile/src/HostileToken.sol`. These transactions come after the scenario's last block, so they are not in the recording; the unit tests cover the same cases with mocks. One attack is left out: a token whose calls burn all their gas. graph-node takes a node's out-of-gas error for a revert when it comes from geth, reth or nethermind, but it does not know anvil's wording, and would wait on this chain for ever.
+
 ### The recorded chain
 
 `./scripts/local-chain.sh record <ajna-v3 checkout>` builds that chain and writes `tests/recorded/local-chain.test.ts`, a Matchstick test that needs no chain to run:
@@ -317,14 +336,17 @@ Matchstick does not check everything a graph-node does: that each data source li
 ./scripts/local-chain.sh stop
 ```
 
-`deploy` renders the subgraph for the local chain, builds it, deploys it and waits until it has indexed every block, failing if indexing does. `reconcile` (`integration/reconcile.js`) then makes two kinds of check:
+`deploy` renders the subgraph for the local chain, builds it, deploys it and waits until it has indexed every block and is healthy. It fails, with graph-node's reason, if indexing does. `reconcile` (`integration/reconcile.js`) then makes three kinds of check:
 
 - the recorded test's checks of the chain's final state, against the entities the graph-node serves
 - for every `Pool`, `Bucket`, `Lend`, `Loan` and `PositionLend`, the fields read from the contracts, against the chain at the block the entity says it was refreshed in. These drift between events, so the recorded test cannot check them. Where the contracts offer another way to a value than the reader the mappings use, that way is taken: a token's `balanceOf` for a pool's balances, the pool's own `bucketInfo` for a bucket.
+- what the subgraph must hold after the hostile transactions: each hostile token's name, symbol and decimals, the pool whose readers its token broke, and the allowances
 
 `deploy` leaves the package configured for the local chain. Run `yarn configure <network>` and `yarn codegen` again before building for a real network or running the tests.
 
-The IPFS node runs offline. By default it would join the public IPFS network and offer the files of every subgraph deployed to it.
+The IPFS node runs offline. By default it would join the public IPFS network and offer the files of every subgraph deployed to it. The containers' ports are published on this machine only: graph-node's admin port deploys subgraphs for whoever can reach it.
+
+The graph-node container must be able to reach the chain. The default address suits Docker Desktop, and a Lima VM is described below. With Docker Engine on Linux the container reaches the host at the Docker bridge's address, where anvil does not listen unless the chain is started with `ANVIL_IP_ADDR=0.0.0.0`. That has not been run, and it opens the chain to everything that can reach the machine.
 
 CI does not run this: it needs Docker, Foundry and the contract repository.
 
@@ -346,5 +368,7 @@ export CHAIN_RPC=http://192.168.5.2:8545
 
 ## Known issues
 
+- A token can slow indexing down, though not stop it. Every event of its pool has the readers call it, and a call can be made to use all the gas graph-node allows a read. A node that gives up on such a call with a timeout, where geth reports it out of gas, would stall the subgraph: graph-node takes a timeout for a failure to reach the node, and asks again.
+- A `TransferLP` that names thousands of buckets and moves LP costs several reads for each bucket.
 - On Linux, `yarn test` works on Ubuntu 22.04 only. graph-cli 0.56 asks for the Matchstick binary built for the Ubuntu version it runs on, and Matchstick 0.6.0 is published for Ubuntu 22 alone. On another version, download `binary-linux-22` from the release below and run it from this directory.
 - On Apple silicon newer than M2, `yarn test` fails with `Unsupported platform`, because graph-cli 0.56 does not recognise the CPU. Download `binary-macos-11-m1` from the [Matchstick 0.6.0 release](https://github.com/LimeChain/matchstick/releases/tag/0.6.0), the version `yarn test` uses, and run it from this directory instead.

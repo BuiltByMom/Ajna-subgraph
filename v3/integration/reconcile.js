@@ -19,6 +19,10 @@
 //     against the chain at the block the entity says it was refreshed in. These drift between
 //     events, so the recorded test cannot check them. Where the contracts offer another way to
 //     the same value than the reader the mappings use, that way is taken.
+//
+// On the local chain it then makes the checks integration/hostile.js left in
+// integration/.out/hostile.json, at the block that script ended at: what the subgraph must hold
+// after tokens and arguments chosen to break an indexer.
 const fs = require("fs")
 const path = require("path")
 
@@ -150,39 +154,53 @@ async function main() {
     return references[entity][field]
   }
 
+  const failures = []
+
+  // Every entity of a kind as it was at a block, a thousand at a time. The pages follow the ids:
+  // a hosted endpoint refuses to skip more than a few thousand entities.
+  const all = async (entity, selection, at) => {
+    const items = []
+    let last = null
+    for (;;) {
+      const after = last === null ? "" : `where: { id_gt: "${last}" }, `
+      const page = (await graphql(url, `{ ${plural[entity]}(first: 1000, orderBy: id, ${after}${at}) { id ${selection} } }`))[plural[entity]]
+      items.push(...page)
+      if (page.length < 1000) return items
+      last = page[page.length - 1].id
+    }
+  }
+
+  // makes checks of the kinds integration/expected.js writes, against the entities as they were at a block
+  const run = async (checks, at) => {
+    for (const check of checks) {
+      if (check.kind === "count") {
+        const total = (await all(check.entity, "", at)).length
+        if (total !== check.count) failures.push(`${check.entity}: ${total} entities, expected ${check.count}`)
+        continue
+      }
+
+      const name = single[check.entity]
+      if (check.kind === "absent") {
+        const found = (await graphql(url, `{ ${name}(id: "${check.id}", ${at}) { id } }`))[name]
+        if (found !== null) failures.push(`${check.entity} ${check.id}: exists, expected none`)
+        continue
+      }
+
+      const selection = (await isReference(check.entity, check.field)) ? `${check.field} { id }` : check.field
+      const found = (await graphql(url, `{ ${name}(id: "${check.id}", ${at}) { ${selection} } }`))[name]
+      if (found === null) {
+        failures.push(`${check.entity} ${check.id}: missing`)
+      } else if (normalized(found[check.field]) !== check.value) {
+        failures.push(`${check.entity} ${check.id} ${check.field}: ${normalized(found[check.field])}, expected ${check.value}`)
+      }
+    }
+  }
+
   const at = `block: { number: ${head} }`
   const events = await decodedEvents(chain, scenario)
   // the graph-node indexes the scenario's own addresses, so nothing is renamed
   const checks = await expectations(chain, scenario, events, (address) => address.toLowerCase())
-
-  const failures = []
-  for (const check of checks) {
-    if (check.kind === "count") {
-      let total = 0
-      for (let skip = 0; ; skip += 1000) {
-        const page = (await graphql(url, `{ ${plural[check.entity]}(first: 1000, skip: ${skip}, ${at}) { id } }`))[plural[check.entity]]
-        total += page.length
-        if (page.length < 1000) break
-      }
-      if (total !== check.count) failures.push(`${check.entity}: ${total} entities, expected ${check.count}`)
-      continue
-    }
-
-    const name = single[check.entity]
-    if (check.kind === "absent") {
-      const found = (await graphql(url, `{ ${name}(id: "${check.id}", ${at}) { id } }`))[name]
-      if (found !== null) failures.push(`${check.entity} ${check.id}: exists, expected none`)
-      continue
-    }
-
-    const selection = (await isReference(check.entity, check.field)) ? `${check.field} { id }` : check.field
-    const found = (await graphql(url, `{ ${name}(id: "${check.id}", ${at}) { ${selection} } }`))[name]
-    if (found === null) {
-      failures.push(`${check.entity} ${check.id}: missing`)
-    } else if (normalized(found[check.field]) !== check.value) {
-      failures.push(`${check.entity} ${check.id} ${check.field}: ${normalized(found[check.field])}, expected ${check.value}`)
-    }
-  }
+  await run(checks, at)
 
   const finalFailures = failures.length
   console.log(`${checks.length - finalFailures} of ${checks.length} checks agree with the chain at block ${head}`)
@@ -197,14 +215,6 @@ async function main() {
     refreshed += 1
     if (normalized(actual) !== String(expected)) failures.push(`${what}: ${normalized(actual)}, expected ${expected}`)
   }
-  const all = async (entity, selection) => {
-    const items = []
-    for (let skip = 0; ; skip += 1000) {
-      const page = (await graphql(url, `{ ${plural[entity]}(first: 1000, skip: ${skip}, ${at}) { ${selection} } }`))[plural[entity]]
-      items.push(...page)
-      if (page.length < 1000) return items
-    }
-  }
   const deploymentOf = {}
   const infoOf = (pool) => ({ address: deploymentOf[pool].poolInfoUtils, iface: INFO })
   const poolAt = (pool) => ({ address: pool, iface: POOL })
@@ -214,7 +224,8 @@ async function main() {
     `id updatedAtBlockNumber factory { id } quoteToken { id decimals } collateralToken { id decimals }
      poolSize debt inflator borrowRate rateAtTarget utilization lendRate quoteTokenBalance collateralBalance
      escrowedQuote availableQuote quoteSurplus quoteSurplusClaimable quoteSurplusLotRemaining
-     collateralSurplus collateralSurplusClaimable collateralSurplusLotRemaining`
+     collateralSurplus collateralSurplusClaimable collateralSurplusLotRemaining`,
+    at
   )
   for (const pool of pools) {
     deploymentOf[pool.id] = scenario.deployments.find((deployment) => deployment.factory.address === pool.factory.id)
@@ -255,7 +266,7 @@ async function main() {
     same(what("collateralSurplusLotRemaining"), pool.collateralSurplusLotRemaining, decimal(collateralSurplus[2]))
   }
 
-  for (const bucket of await all("Bucket", `id pool { id } bucketIndex updatedAtBlockNumber bucketPrice deposit collateral lpb exchangeRate`)) {
+  for (const bucket of await all("Bucket", `id pool { id } bucketIndex updatedAtBlockNumber bucketPrice deposit collateral lpb exchangeRate`, at)) {
     const block = Number(bucket.updatedAtBlockNumber)
     if (block === 0) {
       unread += 1
@@ -272,7 +283,11 @@ async function main() {
     same(what("exchangeRate"), bucket.exchangeRate, decimal(exchangeRate))
   }
 
-  for (const lend of await all("Lend", `id pool { id } bucketIndex lender updatedAtBlockNumber lpb lpbValueInQuote depositTime marked liveLpb fundedValueInQuote`)) {
+  for (const lend of await all(
+    "Lend",
+    `id pool { id } bucketIndex lender updatedAtBlockNumber lpb lpbValueInQuote depositTime marked liveLpb fundedValueInQuote`,
+    at
+  )) {
     const block = Number(lend.updatedAtBlockNumber)
     const what = (name) => `Lend of ${lend.lender} in bucket ${lend.bucketIndex} of ${lend.pool.id} ${name} at block ${block}`
     const [lp, marked, liveLp, liveWorth, fundedWorth] = await chain.call(
@@ -291,7 +306,7 @@ async function main() {
     same(what("depositTime"), lend.depositTime, depositTime)
   }
 
-  for (const loan of await all("Loan", `id pool { id } loanId status updatedAtBlockNumber t0debt collateralPledged t0Tp thresholdPrice`)) {
+  for (const loan of await all("Loan", `id pool { id } loanId status updatedAtBlockNumber t0debt collateralPledged t0Tp thresholdPrice`, at)) {
     const block = Number(loan.updatedAtBlockNumber)
     if (block === 0) {
       unread += 1
@@ -316,7 +331,8 @@ async function main() {
 
   for (const lend of await all(
     "PositionLend",
-    `id pool { id } bucketIndex updatedAtBlockNumber lpb lpbValueInQuote depositTime position { tokenId positionManager { id } }`
+    `id pool { id } bucketIndex updatedAtBlockNumber lpb lpbValueInQuote depositTime position { tokenId positionManager { id } }`,
+    at
   )) {
     const block = Number(lend.updatedAtBlockNumber)
     const manager = { address: lend.position.positionManager.id, iface: MANAGER }
@@ -330,11 +346,30 @@ async function main() {
     same(what("lpbValueInQuote"), lend.lpbValueInQuote, decimal(worth))
   }
 
-  for (const failure of failures) console.error(failure)
+  const refreshedFailures = failures.length - finalFailures
   console.log(
-    `${refreshed - (failures.length - finalFailures)} of ${refreshed} refreshed fields agree with the chain at the block they were read in` +
+    `${refreshed - refreshedFailures} of ${refreshed} refreshed fields agree with the chain at the block they were read in` +
       (unread === 0 ? "" : ` (${unread} entities have not been read from the contracts yet)`)
   )
+
+  /******************************************/
+  /*** Hostile tokens and arguments, local ***/
+  /******************************************/
+
+  const hostileFile = path.join(OUT, "hostile.json")
+  if (!configFile && fs.existsSync(hostileFile)) {
+    const hostile = JSON.parse(fs.readFileSync(hostileFile, "utf8"))
+    if (meta.block.number < hostile.headBlock) {
+      throw new Error(`the subgraph is at block ${meta.block.number}; the hostile transactions end at ${hostile.headBlock}`)
+    }
+    const before = failures.length
+    await run(hostile.checks, `block: { number: ${hostile.headBlock} }`)
+    console.log(
+      `${hostile.checks.length - (failures.length - before)} of ${hostile.checks.length} checks hold after the hostile tokens and arguments, at block ${hostile.headBlock}`
+    )
+  }
+
+  for (const failure of failures) console.error(failure)
   if (failures.length !== 0) process.exit(1)
 }
 

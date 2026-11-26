@@ -52,6 +52,7 @@ import {
   mockLoanTerm,
   mockPoolSnapshot,
   mockPoolSnapshotReverts,
+  mockPoolScales,
   mockTokenInfo,
   unmarkedLender
 } from "./utils/mock-contract-calls"
@@ -402,7 +403,7 @@ describe("ERC20Pool lender events", () => {
     assert.fieldEquals("Pool", POOL.toHexString(), "txCount", "2")
   })
 
-  test("reads the pool and a bucket once per block", () => {
+  test("reads the pool, a bucket and a lender's position once per block", () => {
     depositQuote(wad(1000), 101)
 
     // Chain state cannot differ within a block. Changing the mocks here only shows whether a
@@ -420,14 +421,26 @@ describe("ERC20Pool lender events", () => {
     assert.fieldEquals("Lend", lendId(POOL, INDEX, OTHER_LENDER), "lpb", "4000")
     assert.fieldEquals("Pool", POOL.toHexString(), "txCount", "2")
 
-    // an event in the next block reads again
+    // the first lender's had, by the block's first event, and a third event does not read it again
+    mockLenderIn(INDEX, LENDER, unmarkedLender(wad(1700), wad(1700), blockTimestamp(101)))
+    handleAddQuoteToken(createAddQuoteTokenEvent(POOL, 101, 2, LENDER, INDEX, wad(700), wad(700)))
+
+    assert.fieldEquals("Lend", lendId(POOL, INDEX, LENDER), "lpb", "1000")
+    assert.fieldEquals("Lend", lendId(POOL, INDEX, LENDER), "updatedAtBlockNumber", "101")
+    assert.fieldEquals("Pool", POOL.toHexString(), "txCount", "3")
+
+    // events in the next block read again
     mockLenderIn(INDEX, OTHER_LENDER, unmarkedLender(wad(4001), wad(4001), blockTimestamp(102)))
     handleAddQuoteToken(createAddQuoteTokenEvent(POOL, 102, 0, OTHER_LENDER, INDEX, wad(1), wad(1)))
+    handleAddQuoteToken(createAddQuoteTokenEvent(POOL, 102, 1, LENDER, INDEX, wad(1), wad(1)))
 
     assert.fieldEquals("Pool", POOL.toHexString(), "poolSize", "5000")
     assert.fieldEquals("Pool", POOL.toHexString(), "updatedAtBlockNumber", "102")
     assert.fieldEquals("Bucket", bucketId(POOL, INDEX), "deposit", "5000")
     assert.fieldEquals("Bucket", bucketId(POOL, INDEX), "updatedAtBlockNumber", "102")
+    assert.fieldEquals("Lend", lendId(POOL, INDEX, OTHER_LENDER), "lpb", "4001")
+    assert.fieldEquals("Lend", lendId(POOL, INDEX, LENDER), "lpb", "1700")
+    assert.fieldEquals("Lend", lendId(POOL, INDEX, LENDER), "updatedAtBlockNumber", "102")
   })
 
   test("keeps the pool's last state when the readers revert, and catches up at the next event", () => {
@@ -796,7 +809,8 @@ describe("ERC20Pool pool events", () => {
     const usd = testAddress(0x7002)
     const receiver = testAddress(0x9003)
     mockLoanTerm(deployment().factory, THIRTY_DAYS)
-    mockTokenInfo(usd, "Six Decimal Dollar", "USD6", 6)
+    mockTokenInfo(usd, "Six Decimal Dollar", "USD6")
+    mockPoolScales(pool, 18, 6)
     mockPoolSnapshot(deployment().poolInfoUtilsMulticall, pool, new PoolSnapshot())
     handlePoolCreated(createPoolCreatedEvent(deployment().factory, pool, COLLATERAL, usd, CREATED_AT, 1))
 

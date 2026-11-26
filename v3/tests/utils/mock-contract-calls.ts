@@ -19,14 +19,28 @@ export function mockLoanTerm(factory: Address, loanTerm: BigInt): void {
   createMockedFunction(factory, "loanTerm", "loanTerm():(uint256)").returns([uintValue(loanTerm)])
 }
 
-export function mockTokenDecimals(token: Address, decimals: i32): void {
-  createMockedFunction(token, "decimals", "decimals():(uint8)").returns([indexValue(decimals)])
-}
-
-export function mockTokenInfo(token: Address, name: string, symbol: string, decimals: i32): void {
+export function mockTokenInfo(token: Address, name: string, symbol: string): void {
   createMockedFunction(token, "name", "name():(string)").returns([ethereum.Value.fromString(name)])
   createMockedFunction(token, "symbol", "symbol():(string)").returns([ethereum.Value.fromString(symbol)])
-  mockTokenDecimals(token, decimals)
+}
+
+// The scales a pool keeps for its two tokens, 10^(18 - decimals), fixed when the factory deployed
+// it. A token's decimals are taken from these and not from the token.
+export function mockPoolScales(pool: Address, collateralDecimals: i32, quoteDecimals: i32): void {
+  createMockedFunction(pool, "collateralScale", "collateralScale():(uint256)").returns([
+    uintValue(BigInt.fromI32(10).pow(<u8>(18 - collateralDecimals)))
+  ])
+  createMockedFunction(pool, "quoteTokenScale", "quoteTokenScale():(uint256)").returns([
+    uintValue(BigInt.fromI32(10).pow(<u8>(18 - quoteDecimals)))
+  ])
+}
+
+// A token that answers decimals() with a number no 32-bit integer holds. Nothing may convert it:
+// a mapping that asks the token, as the generated try_decimals does, aborts here.
+export function mockTokenDecimalsOutOfRange(token: Address): void {
+  createMockedFunction(token, "decimals", "decimals():(uint8)").returns([
+    uintValue(BigInt.fromI32(2).pow(255))
+  ])
 }
 
 // a token whose name() and symbol() do not decode as strings

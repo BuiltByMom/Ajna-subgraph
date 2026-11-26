@@ -29,6 +29,8 @@ The v3 subgraph is a separate deployment with its own schema. It follows the v3 
 | `position.tokenURI` | Not stored. Read it from the PositionManager. |
 | Withdrawing from a bucket whose quote is lent out | New: the exit queue. `ExitQueuePlace`, the bucket's `queueHead`, `queueTail`, `escrowQuote` and `escrowCollateral`, and `isExitClaim` on `RemoveQuoteToken` and `RemoveCollateral`. |
 | `lup` on `AddQuoteToken`, `MoveQuoteToken`, `RemoveQuoteToken`, `DrawDebt`, `RepayDebt` | Gone |
+| `token.name`, `token.symbol` | Cut to 128 characters. `unknown` when the token gives neither. |
+| `token.decimals` | What the token reported when its first pool was deployed, always 0 to 18. `token.totalSupply` and `token.tokenType` are gone. |
 | ERC721 pools, the grant fund, the AJNA token, the burn wrapper | Not in this subgraph |
 
 ## Queries

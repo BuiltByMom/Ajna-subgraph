@@ -299,7 +299,7 @@ export function createPool(pool_: Address, collateral: Address, quote: Address, 
 }
 
 // create a 721 type pool entity and save it to the store
-export function create721Pool(pool: Address, collateral: Address, quote: Address, interestRate: BigInt, feeRate: BigInt, calldata: Bytes): void {
+export function create721Pool(pool: Address, collateral: Address, quote: Address, interestRate: BigInt, feeRate: BigInt, calldata: Bytes, isSubset: boolean = false): void {
     // mock rates and fees contract calls
     mockGetRatesAndFees(pool, BigInt.fromString("980000000000000000"), BigInt.fromString("60000000000000000"))
 
@@ -310,6 +310,19 @@ export function create721Pool(pool: Address, collateral: Address, quote: Address
             ethereum.Value.fromUnsignedBigInt(interestRate),
             ethereum.Value.fromUnsignedBigInt(feeRate)
         ])
+
+    // mock get token address contract calls: the handler reads the pool's tokens from the pool
+    createMockedFunction(pool, 'collateralAddress', 'collateralAddress():(address)')
+        .withArgs([])
+        .returns([ethereum.Value.fromAddress(collateral)])
+    createMockedFunction(pool, 'quoteTokenAddress', 'quoteTokenAddress():(address)')
+        .withArgs([])
+        .returns([ethereum.Value.fromAddress(quote)])
+
+    // mock the pool's kind: token ids are decoded from the calldata of a subset pool only
+    createMockedFunction(pool, 'isSubset', 'isSubset():(bool)')
+        .withArgs([])
+        .returns([ethereum.Value.fromBoolean(isSubset)])
 
     // mock get token info contract calls
     mockGetERC721TokenInfo(collateral, 'collateral', 'C')

@@ -1,0 +1,11 @@
+# written by `yarn configure`
+subgraph.yaml
+src/config/deployments.ts
+
+# matchstick
+tests/.bin/
+tests/.latest.json
+tests/.docker/
+
+# written by integration/scenario.js
+integration/.out/

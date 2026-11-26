@@ -1,0 +1,70 @@
+# A graph-node, with the IPFS node and the Postgres it needs, for indexing the local chain that
+# scripts/local-chain.sh builds. Started by scripts/local-graph-node.sh; see the README's
+# Integration section.
+#
+# Nothing is kept between runs: there are no volumes, so `down` leaves no trace of the chain the
+# node indexed, and the next `up` starts from an empty database.
+#
+# CHAIN_RPC is the chain's JSON-RPC address as the graph-node container reaches it. The default
+# suits Docker Desktop. Where the containers run in a Lima VM, the Mac is http://192.168.5.2:8545.
+# For Docker Engine on Linux, see scripts/local-graph-node.sh.
+#
+# Every port is published on this machine only. graph-node's admin port deploys subgraphs for
+# whoever can reach it, and the IPFS API stores what it is sent.
+services:
+  graph-node:
+    # published for amd64 only: on Apple silicon the Docker VM needs Rosetta
+    image: graphprotocol/graph-node:v0.45.0
+    platform: linux/amd64
+    ports:
+      - "127.0.0.1:8000:8000" # GraphQL queries
+      - "127.0.0.1:8020:8020" # admin: create and deploy
+      - "127.0.0.1:8030:8030" # indexing status
+    # The image's own start script waits for IPFS and Postgres with `nc`, which crashes under
+    # Rosetta and leaves the script waiting four minutes for nothing. The health checks below do
+    # the waiting instead, and graph-node is started directly.
+    depends_on:
+      ipfs:
+        condition: service_healthy
+      postgres:
+        condition: service_healthy
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    # The image sets GRAPH_NODE_CONFIG to an empty value, which graph-node takes for a config
+    # file; its start script unsets it, and so does this. The network name must be the one the
+    # subgraph's config was rendered with.
+    entrypoint:
+      - /bin/sh
+      - -c
+      - >-
+        unset GRAPH_NODE_CONFIG;
+        exec graph-node
+        --node-id default
+        --postgres-url postgresql://graph-node:let-me-in@postgres:5432/graph-node
+        --ipfs ipfs:5001
+        --ethereum-rpc "$$CHAIN"
+    environment:
+      CHAIN: "${CHAIN_NETWORK:-anvil}:${CHAIN_RPC:-http://host.docker.internal:8545}"
+      GRAPH_LOG: info
+  ipfs:
+    # The image has its own health check. The daemon runs offline: by default it would join the
+    # public IPFS network and offer every file of a deployed subgraph to it. graph-node only
+    # needs the node's API.
+    image: ipfs/kubo:v0.43.2
+    command: ["daemon", "--migrate=true", "--offline"]
+    ports:
+      - "127.0.0.1:5001:5001"
+  postgres:
+    image: postgres:16
+    command: ["postgres", "-c", "shared_preload_libraries=pg_stat_statements"]
+    environment:
+      POSTGRES_USER: graph-node
+      POSTGRES_PASSWORD: let-me-in
+      POSTGRES_DB: graph-node
+      # graph-node requires a database created with the C locale
+      POSTGRES_INITDB_ARGS: "-E UTF8 --locale=C"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U graph-node -d graph-node"]
+      interval: 2s
+      timeout: 2s
+      retries: 30

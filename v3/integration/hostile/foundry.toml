@@ -1,0 +1,6 @@
+# Builds the token integration/hostile.js attacks the indexer with. scripts/local-chain.sh runs
+# the build and keeps its output under integration/.out.
+[profile.default]
+src = "src"
+optimizer = true
+optimizer_runs = 200

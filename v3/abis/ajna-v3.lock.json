@@ -1,0 +1,12 @@
+{
+  "repository": "https://github.com/ajna-finance/ajna-v3",
+  "commit": "da4d2560b55df1927735493727ae90321971bcdd",
+  "srcTree": "df2401e251f771b9b56d51b0b1119b63848d2152",
+  "abis": {
+    "ERC20Pool.json": "5270672ee95d4bd83e6b1194d580dbce0a4b518201c3dc373ed667502c68f840",
+    "ERC20PoolFactory.json": "19f81f53d1711612be9989b37c5832e44730e54c1fed090dfb25dfcca6d7efc1",
+    "PoolInfoUtils.json": "a2ea14409199436ee2391655131192e1bd0fb48dc292859774b1bc7502dfff95",
+    "PoolInfoUtilsMulticall.json": "3c3b8d396ea8ddea7b189c0d0c4b9ee4114f83c2e37a02bc0270dc0378309212",
+    "PositionManager.json": "d8c9ccd507a61a80832a1fc99599739001f18e22fad18437b709c5cdc1be41df"
+  }
+}

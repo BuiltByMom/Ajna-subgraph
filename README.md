@@ -4,6 +4,8 @@
 
 This Subgraph ingests contracts used by the Ajna Protocol. Core contracts can be found [here](https://github.com/ajna-finance/contracts).
 
+The subgraph for Ajna v3 is a separate package in [v3/](./v3), with its own README. Everything below describes the v2 subgraph.
+
 
 ## Installation
 Install using `yarn`, because `npm` has an issue installing [Gluegun](https://github.com/infinitered/gluegun).

@@ -1,6 +1,8 @@
 name: Matchstick Tests
 
-on: [push]
+# pull_request as well as push: a push runs in the repository pushed to, so without it a pull
+# request from a fork shows no checks here
+on: [push, pull_request]
 
 jobs:
   tests:
